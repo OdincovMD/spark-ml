@@ -1,0 +1,8 @@
+-Duser.home=$PWD/.sbt-home
+-Dsbt.global.base=$PWD/.sbt-cache/global
+-Dsbt.boot.directory=$PWD/.sbt-cache/boot
+-Dsbt.ivy.home=$PWD/.ivy2
+-Dsbt.coursier.home=$PWD/.coursier
+-Dsbt.global.localcache=$PWD/.sbt-cache/local
+-Dsbt.server.forcestart=true
+--no-server
