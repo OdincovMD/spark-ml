@@ -8,7 +8,9 @@ lazy val commonSettings = Seq(
   resolvers += Resolver.mavenCentral,
   libraryDependencies ++= Seq(
     "org.apache.spark" %% "spark-sql" % sparkVersion,
-    "org.apache.spark" %% "spark-mllib" % sparkVersion
+    "org.apache.spark" %% "spark-mllib" % sparkVersion,
+    ("ml.dmlc" %% "xgboost4j-spark" % "3.2.0")
+      .exclude("com.esotericsoftware", "kryo")
   ),
   Compile / run / fork := true,
   Test / fork := true,
