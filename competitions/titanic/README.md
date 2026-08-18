@@ -51,6 +51,7 @@ Run one experiment:
 ./bin/sbt-local "titanic/run --experiment lr_v1"
 ./bin/sbt-local "titanic/run --experiment xgb_v1"
 ./bin/sbt-local "titanic/run --experiment ensemble_v1"
+./bin/sbt-local "titanic/run --experiment postprocess_v1"
 ```
 
 Fast sanity check for a single candidate instead of the full grid:
@@ -96,3 +97,34 @@ Available model families:
 - `lr_v1`: one-hot categorical features, scaled numeric features, LogisticRegression grid.
 - `xgb_v1`: XGBoost4J-Spark grid.
 - `ensemble_v1`: soft-vote average of RF, GBT, and XGBoost probabilities.
+- `postprocess_v1`: RF probabilities plus Titanic-specific threshold, family, and ticket rule candidates.
+
+## Post-Processing
+
+Titanic leaderboard scores move in visible steps because every changed test passenger shifts public accuracy by about `1 / 418 = 0.00239`.
+
+Run surgical post-processing candidates:
+
+```bash
+./bin/sbt-local "titanic/run --experiment postprocess_v1 --fast --cv-folds 2 --output output/submission_postprocess_check.csv"
+```
+
+This writes:
+
+- `output/postprocess_metrics.csv`
+- `output/postprocess_diagnostics.csv`
+- `output/model_disagreements.csv`
+- `output/submission_postprocess_threshold_047.csv`
+- `output/submission_postprocess_threshold_050.csv`
+- `output/submission_postprocess_threshold_053.csv`
+- `output/submission_postprocess_family_v1.csv`
+- `output/submission_postprocess_ticket_v1.csv`
+- `output/submission_postprocess_family_ticket_v1.csv`
+- `output/submission_postprocess_conservative_v1.csv`
+
+Suggested Kaggle probing order:
+
+1. `output/submission_postprocess_family_ticket_v1.csv`
+2. `output/submission_postprocess_ticket_v1.csv`
+3. `output/submission_postprocess_family_v1.csv`
+4. `output/submission_postprocess_threshold_053.csv`
