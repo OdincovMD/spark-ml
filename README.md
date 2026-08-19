@@ -10,7 +10,7 @@ Why this one:
 
 - It is a Kaggle Getting Started competition with a rolling leaderboard.
 - The data is small enough to iterate quickly while still exercising Spark CSV IO, feature engineering, ML pipelines, evaluation, and Kaggle submission formatting.
-- The target is binary classification, so the first baseline can stay focused and understandable.
+
 
 ## Layout
 
