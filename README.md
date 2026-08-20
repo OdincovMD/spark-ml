@@ -2,14 +2,14 @@
 
 Scala/Spark workspace for Kaggle competitions. Each competition lives in its own folder under `competitions/` and can be wired as a separate sbt subproject.
 
-## First Competition
+## Competitions
 
-Start with [Titanic - Machine Learning from Disaster](https://www.kaggle.com/competitions/titanic).
+Started:
 
-Why this one:
+- [Titanic - Machine Learning from Disaster](https://www.kaggle.com/competitions/titanic): binary classification, feature engineering, model comparison, and post-processing.
+- [House Prices - Advanced Regression Techniques](https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques): tabular regression with `SalePrice` target and `Id,SalePrice` submission format.
 
-- It is a Kaggle Getting Started competition with a rolling leaderboard.
-- The data is small enough to iterate quickly while still exercising Spark CSV IO, feature engineering, ML pipelines, evaluation, and Kaggle submission formatting.
+Both are Kaggle Getting Started competitions with small enough data to iterate quickly while still exercising Spark CSV IO, feature engineering, ML pipelines, evaluation, and Kaggle submission formatting.
 
 
 ## Layout
@@ -19,17 +19,24 @@ Why this one:
 ├── build.sbt
 ├── bin/sbt-local
 ├── competitions/
-│   └── titanic/
+│   ├── titanic/
+│   │   ├── README.md
+│   │   ├── data/
+│   │   │   ├── raw/
+│   │   │   ├── interim/
+│   │   │   └── processed/
+│   │   ├── models/
+│   │   ├── output/
+│   │   └── src/main/
+│   │       ├── resources/log4j2.properties
+│   │       └── scala/kaggle/sparkml/titanic/TitanicPipeline.scala
+│   └── house-prices/
 │       ├── README.md
+│       ├── RESULTS.md
 │       ├── data/
-│       │   ├── raw/
-│       │   ├── interim/
-│       │   └── processed/
 │       ├── models/
 │       ├── output/
-│       └── src/main/
-│           ├── resources/log4j2.properties
-│           └── scala/kaggle/sparkml/titanic/TitanicPipeline.scala
+│       └── src/main/scala/kaggle/sparkml/houseprices/HousePricesPipeline.scala
 └── project/build.properties
 ```
 
@@ -43,6 +50,7 @@ The local sbt wrapper keeps launcher and dependency caches inside this repositor
 
 ```bash
 ./bin/sbt-local "titanic/compile"
+./bin/sbt-local "housePrices/compile"
 ```
 
 ## Kaggle Setup
@@ -56,14 +64,25 @@ mkdir -p ~/.kaggle
 chmod 600 ~/.kaggle/kaggle.json
 ```
 
-Accept the Titanic competition rules on Kaggle, then download the data:
+Accept the competition rules on Kaggle, then download the data.
+
+Titanic:
 
 ```bash
 kaggle competitions download -c titanic -p competitions/titanic/data/raw
 unzip competitions/titanic/data/raw/titanic.zip -d competitions/titanic/data/raw
 ```
 
+House Prices:
+
+```bash
+kaggle competitions download -c house-prices-advanced-regression-techniques -p competitions/house-prices/data/raw
+unzip competitions/house-prices/data/raw/house-prices-advanced-regression-techniques.zip -d competitions/house-prices/data/raw
+```
+
 ## Train And Create Submission
+
+Titanic:
 
 ```bash
 ./bin/sbt-local "titanic/run"
@@ -85,4 +104,28 @@ Submit:
 kaggle competitions submit -c titanic \
   -f competitions/titanic/output/submission.csv \
   -m "Scala Spark RandomForest baseline"
+```
+
+House Prices:
+
+```bash
+./bin/sbt-local "housePrices/run"
+```
+
+This reads:
+
+- `competitions/house-prices/data/raw/train.csv`
+- `competitions/house-prices/data/raw/test.csv`
+
+And writes:
+
+- `competitions/house-prices/output/submission.csv`
+- `competitions/house-prices/models/rf_log_price_baseline`
+
+Submit:
+
+```bash
+kaggle competitions submit -c house-prices-advanced-regression-techniques \
+  -f competitions/house-prices/output/submission.csv \
+  -m "Scala Spark RF log-price baseline"
 ```

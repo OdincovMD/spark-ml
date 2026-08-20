@@ -22,7 +22,7 @@ lazy val commonSettings = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(titanic)
+  .aggregate(titanic, housePrices)
   .settings(
     name := "spark-ml-kaggle",
     publish / skip := true
@@ -33,4 +33,11 @@ lazy val titanic = (project in file("competitions/titanic"))
   .settings(
     name := "kaggle-titanic-spark",
     Compile / run / mainClass := Some("kaggle.sparkml.titanic.TitanicPipeline")
+  )
+
+lazy val housePrices = (project in file("competitions/house-prices"))
+  .settings(commonSettings)
+  .settings(
+    name := "kaggle-house-prices-spark",
+    Compile / run / mainClass := Some("kaggle.sparkml.houseprices.HousePricesPipeline")
   )
