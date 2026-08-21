@@ -38,6 +38,14 @@ ElasticNet baseline:
 ./bin/sbt-local "housePrices/run --algo lr --output output/submission_lr_v1.csv --model models/lr_elastic_net_v1"
 ```
 
+Feature-engineered ElasticNet candidate:
+
+```bash
+./bin/sbt-local "housePrices/run --algo lr --reg-param 0.01 --elastic-net 0.8 --output output/submission_lr_fe_v2.csv --model models/lr_elastic_net_fe_v2"
+```
+
+By default, the training fit excludes the two anomalous rows with `GrLivArea >= 4000` and `SalePrice < 300000`. Pass `--keep-outliers` to disable that filter. Validation rows are never filtered.
+
 Tune without writing a model/submission:
 
 ```bash
@@ -59,7 +67,7 @@ Gradient-Boosted Trees baseline:
 Submit:
 
 ```bash
-kaggle competitions submit -c house-prices-advanced-regression-techniques -f competitions/house-prices/output/submission.csv -m "Scala Spark RF log-price baseline"
+kaggle competitions submit -c house-prices-advanced-regression-techniques -f competitions/house-prices/output/submission_lr_fe_v2.csv -m "Scala Spark ElasticNet log-price FE v2"
 ```
 
 ## Baseline
@@ -67,7 +75,9 @@ kaggle competitions submit -c house-prices-advanced-regression-techniques -f com
 Current pipeline:
 
 - infer numeric and categorical columns from `train.csv`;
-- add simple house features: age at sale, remodel age, total square footage, total bathrooms;
+- add house age, remodel age, total square footage, bathroom, quality interaction/polynomial, and presence features;
+- add `log1p` variants for skewed numeric features while retaining their raw values;
+- exclude the two anomalously cheap `GrLivArea >= 4000` houses from fitting, but not from validation;
 - read Kaggle `NA` markers as nulls so numeric columns with missing values stay numeric;
 - median-impute numeric features;
 - fill/index categorical features with `handleInvalid = keep`;
