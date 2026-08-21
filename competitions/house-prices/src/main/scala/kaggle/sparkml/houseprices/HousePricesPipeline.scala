@@ -28,8 +28,10 @@ object HousePricesPipeline {
       maxIter: Int = 250,
       regParam: Double = 0.01,
       elasticNetParam: Double = 0.8,
+      advancedFeatures: Boolean = false,
       removeOutliers: Boolean = true,
       validationOnly: Boolean = false,
+      validationSeeds: Seq[Long] = Seq.empty,
       seed: Long = 42L
   )
 
@@ -47,8 +49,8 @@ object HousePricesPipeline {
     spark.sparkContext.setLogLevel("WARN")
 
     try {
-      val rawTrain = withHouseFeatures(readCsv(spark, config.trainPath))
-      val rawTest = withHouseFeatures(readCsv(spark, config.testPath))
+      val rawTrain = withHouseFeatures(readCsv(spark, config.trainPath), config.advancedFeatures)
+      val rawTest = withHouseFeatures(readCsv(spark, config.testPath), config.advancedFeatures)
       val train = rawTrain.withColumn(LabelCol, log1p(col(TargetCol).cast(DoubleType)))
 
       val featureColumns = train.columns.filterNot(Set(IdCol, TargetCol, LabelCol))
@@ -61,24 +63,34 @@ object HousePricesPipeline {
       println(s"Max bins: ${config.maxBins}")
       println(s"Numeric features: ${numericColumns.length}")
       println(s"Categorical features: ${categoricalColumns.length}")
+      println(s"Advanced features: ${config.advancedFeatures}")
       println(s"Remove anomalous large-house rows from training: ${config.removeOutliers}")
       println(s"Validation only: ${config.validationOnly}")
 
       val preparedTrain = withCategoricalText(train, categoricalColumns)
       val preparedTest = withCategoricalText(rawTest, categoricalColumns)
-      val Array(trainingWithOutliers, validation) = preparedTrain.randomSplit(Array(0.8, 0.2), config.seed)
-      val training = filterTrainingOutliers(trainingWithOutliers, config.removeOutliers)
-
       val pipeline = buildPipeline(numericColumns, categoricalColumns, config)
-      val validationModel = pipeline.fit(training)
-      val validationPredictions = validationModel.transform(validation)
-      val logRmse = new RegressionEvaluator()
-        .setLabelCol(LabelCol)
-        .setPredictionCol("prediction")
-        .setMetricName("rmse")
-        .evaluate(validationPredictions)
+      val seeds = if (config.validationSeeds.nonEmpty) config.validationSeeds else Seq(config.seed)
+      val validationScores = seeds.map { seed =>
+        val Array(trainingWithOutliers, validation) = preparedTrain.randomSplit(Array(0.8, 0.2), seed)
+        val training = filterTrainingOutliers(trainingWithOutliers, config.removeOutliers)
+        val validationModel = pipeline.fit(training)
+        val validationPredictions = validationModel.transform(validation)
+        val logRmse = new RegressionEvaluator()
+          .setLabelCol(LabelCol)
+          .setPredictionCol("prediction")
+          .setMetricName("rmse")
+          .evaluate(validationPredictions)
+        println(f"Validation log-RMSE (seed $seed): $logRmse%.5f")
+        logRmse
+      }
 
-      println(f"Validation log-RMSE: $logRmse%.5f")
+      if (validationScores.lengthCompare(1) > 0) {
+        val mean = validationScores.sum / validationScores.size
+        val stddev = math.sqrt(validationScores.map(score => math.pow(score - mean, 2.0)).sum / validationScores.size)
+        println(f"Validation log-RMSE mean: $mean%.5f")
+        println(f"Validation log-RMSE stddev: $stddev%.5f")
+      }
 
       if (!config.validationOnly) {
         val finalModel = pipeline.fit(filterTrainingOutliers(preparedTrain, config.removeOutliers))
@@ -204,7 +216,7 @@ object HousePricesPipeline {
       .option("nullValue", "NA")
       .csv(path)
 
-  private def withHouseFeatures(df: DataFrame): DataFrame = {
+  private def withHouseFeatures(df: DataFrame, advancedFeatures: Boolean): DataFrame = {
     val withAge = withColumnIfPresent(df, "HouseAgeAtSale", Seq("YrSold", "YearBuilt")) {
       col("YrSold").cast(DoubleType) - col("YearBuilt").cast(DoubleType)
     }
@@ -234,6 +246,14 @@ object HousePricesPipeline {
     val withGarageAge = withColumnIfPresent(withQualityArea, "GarageAgeAtSale", Seq("YrSold", "GarageYrBlt")) {
       col("YrSold").cast(DoubleType) - col("GarageYrBlt").cast(DoubleType)
     }
+
+    if (!advancedFeatures) {
+      return addLogFeatures(
+        withGarageAge,
+        Seq("LotArea", "GrLivArea", "TotalSF", "TotalBsmtSF", "GarageArea", "MasVnrArea", "WoodDeckSF", "OpenPorchSF", "TotalPorchSF")
+      )
+    }
+
     val withQualitySquared = withColumnIfPresent(withGarageAge, "OverallQualSquared", Seq("OverallQual")) {
       pow(col("OverallQual").cast(DoubleType), 2.0)
     }
@@ -359,14 +379,18 @@ object HousePricesPipeline {
       case "--max-iter" :: value :: tail => parseArgs(tail, config.copy(maxIter = value.toInt))
       case "--reg-param" :: value :: tail => parseArgs(tail, config.copy(regParam = value.toDouble))
       case "--elastic-net" :: value :: tail => parseArgs(tail, config.copy(elasticNetParam = value.toDouble))
+      case "--advanced-features" :: tail => parseArgs(tail, config.copy(advancedFeatures = true))
+      case "--basic-features" :: tail => parseArgs(tail, config.copy(advancedFeatures = false))
       case "--keep-outliers" :: tail => parseArgs(tail, config.copy(removeOutliers = false))
       case "--validation-only" :: tail => parseArgs(tail, config.copy(validationOnly = true))
+      case "--validation-seeds" :: value :: tail =>
+        parseArgs(tail, config.copy(validationSeeds = value.split(",").filter(_.nonEmpty).map(_.toLong).toSeq))
       case "--seed" :: value :: tail => parseArgs(tail, config.copy(seed = value.toLong))
       case "--help" :: _ =>
         println(
           s"""
              |Usage:
-             |  housePrices/run [--algo lr|rf|gbt] [--validation-only] [--keep-outliers] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--train path] [--test path] [--output path] [--model path] [--seed n]
+             |  housePrices/run [--algo lr|rf|gbt] [--validation-only] [--validation-seeds 42,1337,2026] [--advanced-features|--basic-features] [--keep-outliers] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--train path] [--test path] [--output path] [--model path] [--seed n]
              |
              |Defaults:
              |  --algo ${config.algo}
@@ -377,6 +401,7 @@ object HousePricesPipeline {
              |  --max-iter ${config.maxIter}
              |  --reg-param ${config.regParam}
              |  --elastic-net ${config.elasticNetParam}
+             |  --advanced-features ${config.advancedFeatures}
              |  --keep-outliers ${!config.removeOutliers}
              |  --train ${config.trainPath}
              |  --test ${config.testPath}

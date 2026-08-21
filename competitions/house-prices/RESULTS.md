@@ -46,7 +46,7 @@ Other local probes:
 ## Linear 002 - Feature Engineering and Training Outlier Filter
 
 - Date: 2026-08-21
-- Kaggle public score: pending submission
+- Kaggle public score: `0.13414`
 - Submission: `output/submission_lr_fe_v2.csv`
 - Suggested message: `Scala Spark ElasticNet log-price FE v2`
 - Local validation log-RMSE: `0.11281` (seed `42`)
@@ -58,6 +58,20 @@ Pipeline changes versus Linear 001:
 - Added `OverallQual` square/cube terms and quality-area interactions.
 - Added total finished home square footage and pool/second-floor/garage/basement/fireplace flags.
 - Removed the two rows with `GrLivArea >= 4000` and `SalePrice < 300000` only from model fitting; validation observations remain untouched.
+
+Conclusion: the single seed-42 holdout selected an overfit feature set. The public score regressed from `0.13185` to `0.13414`, so advanced features are no longer the default.
+
+## Linear 003 - Baseline Features with Two-Outlier Filter
+
+- Date: 2026-08-21
+- Kaggle public score: pending submission
+- Submission: `output/submission_lr_v3.csv`
+- Suggested message: `Scala Spark ElasticNet v1 plus two-outlier filter`
+
+Three-seed validation comparison:
+
+- Baseline v1 without filtering: `0.11452`, `0.11708`, `0.13001`; mean `0.12053`, stddev `0.00678`.
+- Baseline v1 with the two-outlier training filter: `0.11436`, `0.11661`, `0.11329`; mean `0.11475`, stddev `0.00138`.
 
 New Kaggle scores should be added here after submission with:
 
