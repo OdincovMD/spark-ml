@@ -1,14 +1,28 @@
 package kaggle.sparkml.houseprices
 
+import ml.dmlc.xgboost4j.scala.spark.XGBoostRegressor
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.{Pipeline, UnaryTransformer}
 import org.apache.spark.ml.evaluation.RegressionEvaluator
 import org.apache.spark.ml.feature.{Imputer, OneHotEncoder, StandardScaler, StringIndexer, VectorAssembler}
+import org.apache.spark.ml.linalg.{SQLDataTypes, Vector}
+import org.apache.spark.ml.util.{DefaultParamsReadable, DefaultParamsWritable, Identifiable}
 import org.apache.spark.ml.regression.{GBTRegressor, LinearRegression, RandomForestRegressor}
 import org.apache.spark.ml.PipelineStage
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{DoubleType, IntegerType, NumericType, StringType}
+import org.apache.spark.sql.types.{DataType, DoubleType, IntegerType, NumericType, StringType}
 import org.apache.spark.sql.{Column, DataFrame, SparkSession}
+
+final class DenseVectorTransformer(override val uid: String)
+    extends UnaryTransformer[Vector, Vector, DenseVectorTransformer]
+    with DefaultParamsWritable {
+  def this() = this(Identifiable.randomUID("denseVector"))
+
+  override protected def createTransformFunc: Vector => Vector = _.toDense
+  override protected def outputDataType: DataType = SQLDataTypes.VectorType
+}
+
+object DenseVectorTransformer extends DefaultParamsReadable[DenseVectorTransformer]
 
 object HousePricesPipeline {
   private val TargetCol = "SalePrice"
@@ -28,8 +42,11 @@ object HousePricesPipeline {
       maxIter: Int = 250,
       regParam: Double = 0.01,
       elasticNetParam: Double = 0.8,
+      xgbRounds: Int = 500,
+      xgbEta: Double = 0.03,
+      ensembleXgbWeight: Double = 0.4,
       advancedFeatures: Boolean = false,
-      removeOutliers: Boolean = true,
+      removeOutliers: Boolean = false,
       validationOnly: Boolean = false,
       validationSeeds: Seq[Long] = Seq.empty,
       seed: Long = 42L
@@ -37,8 +54,11 @@ object HousePricesPipeline {
 
   def main(args: Array[String]): Unit = {
     val config = parseArgs(args.toList, Config())
-    require(Set("lr", "rf", "gbt").contains(config.algo), s"Unknown --algo: ${config.algo}")
+    require(Set("lr", "rf", "gbt", "xgb", "ensemble").contains(config.algo), s"Unknown --algo: ${config.algo}")
     require(config.maxBins >= 32, "--max-bins must be at least 32")
+    require(config.xgbRounds > 0, "--xgb-rounds must be positive")
+    require(config.xgbEta > 0.0, "--xgb-eta must be positive")
+    require(config.ensembleXgbWeight >= 0.0 && config.ensembleXgbWeight <= 1.0, "--ensemble-xgb-weight must be between 0 and 1")
 
     val spark = SparkSession
       .builder()
@@ -69,40 +89,127 @@ object HousePricesPipeline {
 
       val preparedTrain = withCategoricalText(train, categoricalColumns)
       val preparedTest = withCategoricalText(rawTest, categoricalColumns)
-      val pipeline = buildPipeline(numericColumns, categoricalColumns, config)
       val seeds = if (config.validationSeeds.nonEmpty) config.validationSeeds else Seq(config.seed)
-      val validationScores = seeds.map { seed =>
-        val Array(trainingWithOutliers, validation) = preparedTrain.randomSplit(Array(0.8, 0.2), seed)
-        val training = filterTrainingOutliers(trainingWithOutliers, config.removeOutliers)
-        val validationModel = pipeline.fit(training)
-        val validationPredictions = validationModel.transform(validation)
-        val logRmse = new RegressionEvaluator()
-          .setLabelCol(LabelCol)
-          .setPredictionCol("prediction")
-          .setMetricName("rmse")
-          .evaluate(validationPredictions)
-        println(f"Validation log-RMSE (seed $seed): $logRmse%.5f")
-        logRmse
-      }
-
-      if (validationScores.lengthCompare(1) > 0) {
-        val mean = validationScores.sum / validationScores.size
-        val stddev = math.sqrt(validationScores.map(score => math.pow(score - mean, 2.0)).sum / validationScores.size)
-        println(f"Validation log-RMSE mean: $mean%.5f")
-        println(f"Validation log-RMSE stddev: $stddev%.5f")
-      }
-
-      if (!config.validationOnly) {
-        val finalModel = pipeline.fit(filterTrainingOutliers(preparedTrain, config.removeOutliers))
-        finalModel.write.overwrite().save(config.modelPath)
-        writeSubmission(finalModel.transform(preparedTest), config.outputPath)
-        println(s"Model saved: ${config.modelPath}")
-        println(s"Submission saved: ${config.outputPath}")
+      if (config.algo == "ensemble") {
+        runEnsemble(numericColumns, categoricalColumns, preparedTrain, preparedTest, seeds, config)
+      } else {
+        runSingleModel(numericColumns, categoricalColumns, preparedTrain, preparedTest, seeds, config)
       }
     } finally {
       spark.stop()
     }
   }
+
+  private def runSingleModel(
+      numericColumns: Array[String],
+      categoricalColumns: Array[String],
+      preparedTrain: DataFrame,
+      preparedTest: DataFrame,
+      seeds: Seq[Long],
+      config: Config
+  ): Unit = {
+    val pipeline = buildPipeline(numericColumns, categoricalColumns, config)
+    val validationScores = seeds.map { seed =>
+      val Array(trainingWithOutliers, validation) = preparedTrain.randomSplit(Array(0.8, 0.2), seed)
+      val training = filterTrainingOutliers(trainingWithOutliers, config.removeOutliers)
+      val validationModel = pipeline.fit(training)
+      val validationPredictions = validationModel.transform(validation)
+      val logRmse = evaluateLogRmse(validationPredictions)
+      println(f"Validation log-RMSE (seed $seed): $logRmse%.5f")
+      logRmse
+    }
+
+    printValidationSummary(validationScores)
+
+    if (!config.validationOnly) {
+      val finalModel = pipeline.fit(filterTrainingOutliers(preparedTrain, config.removeOutliers))
+      finalModel.write.overwrite().save(config.modelPath)
+      writeSubmission(finalModel.transform(preparedTest), config.outputPath)
+      println(s"Model saved: ${config.modelPath}")
+      println(s"Submission saved: ${config.outputPath}")
+    }
+  }
+
+  private def runEnsemble(
+      numericColumns: Array[String],
+      categoricalColumns: Array[String],
+      preparedTrain: DataFrame,
+      preparedTest: DataFrame,
+      seeds: Seq[Long],
+      config: Config
+  ): Unit = {
+    val weights = Seq(0.0, 0.1, 0.2, 0.3, 0.4, 0.5)
+    val scoresBySeed = seeds.map { seed =>
+      val Array(trainingWithOutliers, validation) = preparedTrain.randomSplit(Array(0.8, 0.2), seed)
+      val training = filterTrainingOutliers(trainingWithOutliers, config.removeOutliers)
+      val lrModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "lr", seed = seed)).fit(training)
+      val xgbModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "xgb", seed = seed)).fit(training)
+      val joined = joinPredictions(lrModel.transform(validation), xgbModel.transform(validation), includeLabel = true)
+      val scoreColumns = weights.map { weight =>
+        val prediction = col("lr_prediction") * lit(1.0 - weight) + col("xgb_prediction") * lit(weight)
+        sqrt(avg(pow(col(LabelCol) - prediction, 2.0))).as(weightColumn(weight))
+      }
+      val row = joined.agg(scoreColumns.head, scoreColumns.tail: _*).head()
+      val scores = weights.zipWithIndex.map { case (weight, index) => weight -> row.getDouble(index) }.toMap
+      println(s"Ensemble validation seed: $seed")
+      weights.foreach(weight => println(f"  XGBoost weight $weight%.1f: ${scores(weight)}%.5f"))
+      scores
+    }
+
+    if (scoresBySeed.lengthCompare(1) > 0) {
+      println("Ensemble mean validation log-RMSE:")
+      weights.foreach { weight =>
+        val scores = scoresBySeed.map(_(weight))
+        val mean = scores.sum / scores.size
+        val stddev = math.sqrt(scores.map(score => math.pow(score - mean, 2.0)).sum / scores.size)
+        println(f"  XGBoost weight $weight%.1f: $mean%.5f (stddev $stddev%.5f)")
+      }
+    }
+
+    if (!config.validationOnly) {
+      val finalTrain = filterTrainingOutliers(preparedTrain, config.removeOutliers)
+      val lrModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "lr")).fit(finalTrain)
+      val xgbModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "xgb")).fit(finalTrain)
+      lrModel.write.overwrite().save(s"${config.modelPath}_lr")
+      xgbModel.write.overwrite().save(s"${config.modelPath}_xgb")
+      val joined = joinPredictions(lrModel.transform(preparedTest), xgbModel.transform(preparedTest), includeLabel = false)
+        .withColumn(
+          "prediction",
+          col("lr_prediction") * lit(1.0 - config.ensembleXgbWeight) +
+            col("xgb_prediction") * lit(config.ensembleXgbWeight)
+        )
+      writeSubmission(joined, config.outputPath)
+      println(f"Ensemble XGBoost weight: ${config.ensembleXgbWeight}%.2f")
+      println(s"Models saved: ${config.modelPath}_lr and ${config.modelPath}_xgb")
+      println(s"Submission saved: ${config.outputPath}")
+    }
+  }
+
+  private def joinPredictions(lrPredictions: DataFrame, xgbPredictions: DataFrame, includeLabel: Boolean): DataFrame = {
+    val lrColumns =
+      if (includeLabel) Seq(col(IdCol), col(LabelCol), col("prediction").as("lr_prediction"))
+      else Seq(col(IdCol), col("prediction").as("lr_prediction"))
+    lrPredictions
+      .select(lrColumns: _*)
+      .join(xgbPredictions.select(col(IdCol), col("prediction").as("xgb_prediction")), Seq(IdCol), "inner")
+  }
+
+  private def evaluateLogRmse(predictions: DataFrame): Double =
+    new RegressionEvaluator()
+      .setLabelCol(LabelCol)
+      .setPredictionCol("prediction")
+      .setMetricName("rmse")
+      .evaluate(predictions)
+
+  private def printValidationSummary(scores: Seq[Double]): Unit =
+    if (scores.lengthCompare(1) > 0) {
+      val mean = scores.sum / scores.size
+      val stddev = math.sqrt(scores.map(score => math.pow(score - mean, 2.0)).sum / scores.size)
+      println(f"Validation log-RMSE mean: $mean%.5f")
+      println(f"Validation log-RMSE stddev: $stddev%.5f")
+    }
+
+  private def weightColumn(weight: Double): String = f"rmse_xgb_${weight * 100.0}%.0f"
 
   private def buildPipeline(numericColumns: Array[String], categoricalColumns: Array[String], config: Config): Pipeline = {
     val imputedNumericColumns = numericColumns.map(c => s"${c}_imputed")
@@ -204,6 +311,35 @@ object HousePricesPipeline {
           .setSeed(config.seed)
 
         imputerStages ++ indexerStages ++ Seq(assembler, model)
+
+      case "xgb" =>
+        val assembler = new VectorAssembler()
+          .setInputCols(imputedNumericColumns ++ indexedCategoricalColumns)
+          .setOutputCol("features_sparse_or_dense")
+          .setHandleInvalid("keep")
+
+        val densifier = new DenseVectorTransformer()
+          .setInputCol("features_sparse_or_dense")
+          .setOutputCol("features")
+
+        val model = new XGBoostRegressor()
+          .setLabelCol(LabelCol)
+          .setFeaturesCol("features")
+          .setObjective("reg:squarederror")
+          .setNumWorkers(1)
+          .setNthread(1)
+          .setNumRound(config.xgbRounds)
+          .setEta(config.xgbEta)
+          .setMaxDepth(config.maxDepth)
+          .setMinChildWeight(1.0)
+          .setSubsample(0.8)
+          .setColsampleBytree(0.8)
+          .setLambda(1.0)
+          .setTreeMethod("hist")
+          .setVerbosity(0)
+          .setSeed(config.seed)
+
+        imputerStages ++ indexerStages ++ Seq(assembler, densifier, model)
     }
 
     new Pipeline().setStages(stages.toArray)
@@ -379,8 +515,12 @@ object HousePricesPipeline {
       case "--max-iter" :: value :: tail => parseArgs(tail, config.copy(maxIter = value.toInt))
       case "--reg-param" :: value :: tail => parseArgs(tail, config.copy(regParam = value.toDouble))
       case "--elastic-net" :: value :: tail => parseArgs(tail, config.copy(elasticNetParam = value.toDouble))
+      case "--xgb-rounds" :: value :: tail => parseArgs(tail, config.copy(xgbRounds = value.toInt))
+      case "--xgb-eta" :: value :: tail => parseArgs(tail, config.copy(xgbEta = value.toDouble))
+      case "--ensemble-xgb-weight" :: value :: tail => parseArgs(tail, config.copy(ensembleXgbWeight = value.toDouble))
       case "--advanced-features" :: tail => parseArgs(tail, config.copy(advancedFeatures = true))
       case "--basic-features" :: tail => parseArgs(tail, config.copy(advancedFeatures = false))
+      case "--remove-outliers" :: tail => parseArgs(tail, config.copy(removeOutliers = true))
       case "--keep-outliers" :: tail => parseArgs(tail, config.copy(removeOutliers = false))
       case "--validation-only" :: tail => parseArgs(tail, config.copy(validationOnly = true))
       case "--validation-seeds" :: value :: tail =>
@@ -390,7 +530,7 @@ object HousePricesPipeline {
         println(
           s"""
              |Usage:
-             |  housePrices/run [--algo lr|rf|gbt] [--validation-only] [--validation-seeds 42,1337,2026] [--advanced-features|--basic-features] [--keep-outliers] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--train path] [--test path] [--output path] [--model path] [--seed n]
+             |  housePrices/run [--algo lr|rf|gbt|xgb|ensemble] [--validation-only] [--validation-seeds 42,1337,2026] [--advanced-features|--basic-features] [--remove-outliers|--keep-outliers] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--xgb-rounds n] [--xgb-eta x] [--ensemble-xgb-weight x] [--train path] [--test path] [--output path] [--model path] [--seed n]
              |
              |Defaults:
              |  --algo ${config.algo}
@@ -401,6 +541,9 @@ object HousePricesPipeline {
              |  --max-iter ${config.maxIter}
              |  --reg-param ${config.regParam}
              |  --elastic-net ${config.elasticNetParam}
+             |  --xgb-rounds ${config.xgbRounds}
+             |  --xgb-eta ${config.xgbEta}
+             |  --ensemble-xgb-weight ${config.ensembleXgbWeight}
              |  --advanced-features ${config.advancedFeatures}
              |  --keep-outliers ${!config.removeOutliers}
              |  --train ${config.trainPath}

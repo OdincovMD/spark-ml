@@ -64,7 +64,7 @@ Conclusion: the single seed-42 holdout selected an overfit feature set. The publ
 ## Linear 003 - Baseline Features with Two-Outlier Filter
 
 - Date: 2026-08-21
-- Kaggle public score: pending submission
+- Kaggle public score: `0.13542`
 - Submission: `output/submission_lr_v3.csv`
 - Suggested message: `Scala Spark ElasticNet v1 plus two-outlier filter`
 
@@ -72,6 +72,29 @@ Three-seed validation comparison:
 
 - Baseline v1 without filtering: `0.11452`, `0.11708`, `0.13001`; mean `0.12053`, stddev `0.00678`.
 - Baseline v1 with the two-outlier training filter: `0.11436`, `0.11661`, `0.11329`; mean `0.11475`, stddev `0.00138`.
+
+Conclusion: despite substantially better random-holdout metrics, removing the two training outliers regressed the public score from `0.13185` to `0.13542`. All training rows are therefore retained by default.
+
+## Ensemble 004 - ElasticNet and Dense-Vector XGBoost
+
+- Date: 2026-08-22
+- Kaggle public score: pending submission
+- Submission: `output/submission_lr_xgb_v4.csv`
+- Suggested message: `Scala Spark ElasticNet 60 XGBoost 40 log blend`
+- Blend: 60% ElasticNet and 40% XGBoost predictions in log-price space.
+- XGBoost: 500 rounds, eta `0.03`, depth `3`, subsample `0.8`, column sample `0.8`.
+- All training rows retained; baseline feature set used.
+
+Validation log-RMSE by XGBoost weight on seeds `42`, `1337`, and `2026`:
+
+- 0%: `0.11452`, `0.11708`, `0.13001`; mean `0.12054`.
+- 10%: `0.11351`, `0.11649`, `0.12643`; mean `0.11881`.
+- 20%: `0.11282`, `0.11628`, `0.12334`; mean `0.11748`.
+- 30%: `0.11245`, `0.11646`, `0.12078`; mean `0.11656`.
+- 40%: `0.11240`, `0.11701`, `0.11879`; mean `0.11607`.
+- 50%: `0.11269`, `0.11793`, `0.11739`; mean `0.11600`.
+
+The quadratic minimum is near 47% XGBoost. A conservative 40% weight was chosen because standalone XGBoost was weaker than ElasticNet on two of the three splits.
 
 New Kaggle scores should be added here after submission with:
 
