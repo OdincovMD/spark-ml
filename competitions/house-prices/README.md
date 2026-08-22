@@ -35,7 +35,7 @@ The sbt task runs from `competitions/house-prices`, so custom paths are relative
 Current ensemble candidate:
 
 ```bash
-./bin/sbt-local "housePrices/run --algo ensemble --max-depth 3 --xgb-rounds 500 --xgb-eta 0.03 --ensemble-xgb-weight 0.4 --output output/submission_lr_xgb_v4.csv --model models/lr_xgb_ensemble_v4"
+./bin/sbt-local "housePrices/run --algo ensemble --max-depth 3 --xgb-rounds 800 --xgb-eta 0.03 --ensemble-xgb-weight 0.67 --output output/submission_lr_xgb_v6_r800_w67.csv --model models/lr_xgb_ensemble_v6_r800_w67"
 ```
 
 Feature-engineered ElasticNet candidate:
@@ -73,13 +73,13 @@ Gradient-Boosted Trees baseline:
 Dense-vector XGBoost:
 
 ```bash
-./bin/sbt-local "housePrices/run --algo xgb --max-depth 3 --xgb-rounds 500 --xgb-eta 0.03 --output output/submission_xgb.csv --model models/xgb_log_price"
+./bin/sbt-local "housePrices/run --algo xgb --max-depth 3 --xgb-rounds 800 --xgb-eta 0.03 --output output/submission_xgb.csv --model models/xgb_log_price"
 ```
 
 Submit:
 
 ```bash
-kaggle competitions submit -c house-prices-advanced-regression-techniques -f competitions/house-prices/output/submission_lr_xgb_v4.csv -m "Scala Spark ElasticNet 60 XGBoost 40 log blend"
+kaggle competitions submit -c house-prices-advanced-regression-techniques -f competitions/house-prices/output/submission_lr_xgb_v6_r800_w67.csv -m "Scala Spark ElasticNet 33 XGBoost 67 indexed 800-round log blend"
 ```
 
 ## Baseline

@@ -78,7 +78,7 @@ Conclusion: despite substantially better random-holdout metrics, removing the tw
 ## Ensemble 004 - ElasticNet and Dense-Vector XGBoost
 
 - Date: 2026-08-22
-- Kaggle public score: pending submission
+- Kaggle public score: `0.12432`
 - Submission: `output/submission_lr_xgb_v4.csv`
 - Suggested message: `Scala Spark ElasticNet 60 XGBoost 40 log blend`
 - Blend: 60% ElasticNet and 40% XGBoost predictions in log-price space.
@@ -95,6 +95,42 @@ Validation log-RMSE by XGBoost weight on seeds `42`, `1337`, and `2026`:
 - 50%: `0.11269`, `0.11793`, `0.11739`; mean `0.11600`.
 
 The quadratic minimum is near 47% XGBoost. A conservative 40% weight was chosen because standalone XGBoost was weaker than ElasticNet on two of the three splits.
+
+## Ensemble 005 - Leaderboard-Calibrated Blend Weight
+
+- Date: 2026-08-22
+- Kaggle public score: `0.12282`
+- Submission: `output/submission_lr_xgb_v5_w67.csv`
+- Suggested message: `Scala Spark ElasticNet 33 XGBoost 67 calibrated log blend`
+- Blend: 33% ElasticNet and 67% XGBoost predictions in log-price space.
+- Same component models and all-row training policy as Ensemble 004.
+
+Weight calibration from public scores and prediction distance:
+
+- ElasticNet at 0% XGBoost: public RMSLE `0.13185`.
+- Ensemble 004 at 40% XGBoost: public RMSLE `0.12432`.
+- RMS log-distance between these submissions: `0.02867062`.
+- Reconstructed quadratic optimum: XGBoost weight `0.6693`.
+- Estimated public RMSLE at the optimum: `0.12281`.
+
+The observed public score was `0.12282`, within `0.00001` of the estimate. Blend-weight optimization is therefore considered complete for these two component models.
+
+## Ensemble 006 - Higher-Capacity Indexed XGBoost
+
+- Date: 2026-08-22
+- Kaggle public score: pending
+- Submission: `output/submission_lr_xgb_v6_r800_w67.csv`
+- Suggested message: `Scala Spark ElasticNet 33 XGBoost 67 indexed 800-round log blend`
+- Blend: 33% ElasticNet and 67% XGBoost predictions in log-price space.
+- XGBoost change versus Ensemble 005: 800 rounds instead of 500; all other model and feature settings retained.
+
+Three-seed validation comparison at the same 50% XGBoost weight:
+
+- 500 rounds: log-RMSE `0.11269`, `0.11793`, `0.11739`; mean `0.11600`.
+- 800 rounds: log-RMSE `0.11153`, `0.11761`, `0.11610`; mean `0.11508`.
+- Improvement: `0.00092` mean log-RMSE; the 800-round model improved all three validation seeds.
+
+The leaderboard-calibrated 67% weight is retained for the first public probe because Ensemble 004 and 005 showed that random-holdout validation systematically underweighted XGBoost. The RMS log-distance from Ensemble 005 is `0.00790716`.
 
 New Kaggle scores should be added here after submission with:
 

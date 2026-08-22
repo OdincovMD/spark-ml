@@ -42,12 +42,14 @@ object HousePricesPipeline {
       maxIter: Int = 250,
       regParam: Double = 0.01,
       elasticNetParam: Double = 0.8,
-      xgbRounds: Int = 500,
+      xgbRounds: Int = 800,
       xgbEta: Double = 0.03,
-      ensembleXgbWeight: Double = 0.4,
+      xgbOneHot: Boolean = false,
+      ensembleXgbWeight: Double = 0.67,
       advancedFeatures: Boolean = false,
       removeOutliers: Boolean = false,
       validationOnly: Boolean = false,
+      skipValidation: Boolean = false,
       validationSeeds: Seq[Long] = Seq.empty,
       seed: Long = 42L
   )
@@ -59,6 +61,7 @@ object HousePricesPipeline {
     require(config.xgbRounds > 0, "--xgb-rounds must be positive")
     require(config.xgbEta > 0.0, "--xgb-eta must be positive")
     require(config.ensembleXgbWeight >= 0.0 && config.ensembleXgbWeight <= 1.0, "--ensemble-xgb-weight must be between 0 and 1")
+    require(!(config.validationOnly && config.skipValidation), "--validation-only and --skip-validation cannot be used together")
 
     val spark = SparkSession
       .builder()
@@ -84,12 +87,17 @@ object HousePricesPipeline {
       println(s"Numeric features: ${numericColumns.length}")
       println(s"Categorical features: ${categoricalColumns.length}")
       println(s"Advanced features: ${config.advancedFeatures}")
+      println(s"XGBoost one-hot categoricals: ${config.xgbOneHot}")
       println(s"Remove anomalous large-house rows from training: ${config.removeOutliers}")
       println(s"Validation only: ${config.validationOnly}")
+      println(s"Skip validation: ${config.skipValidation}")
 
       val preparedTrain = withCategoricalText(train, categoricalColumns)
       val preparedTest = withCategoricalText(rawTest, categoricalColumns)
-      val seeds = if (config.validationSeeds.nonEmpty) config.validationSeeds else Seq(config.seed)
+      val seeds =
+        if (config.skipValidation) Seq.empty
+        else if (config.validationSeeds.nonEmpty) config.validationSeeds
+        else Seq(config.seed)
       if (config.algo == "ensemble") {
         runEnsemble(numericColumns, categoricalColumns, preparedTrain, preparedTest, seeds, config)
       } else {
@@ -138,7 +146,7 @@ object HousePricesPipeline {
       seeds: Seq[Long],
       config: Config
   ): Unit = {
-    val weights = Seq(0.0, 0.1, 0.2, 0.3, 0.4, 0.5)
+    val weights = (0 to 10).map(_ / 10.0)
     val scoresBySeed = seeds.map { seed =>
       val Array(trainingWithOutliers, validation) = preparedTrain.randomSplit(Array(0.8, 0.2), seed)
       val training = filterTrainingOutliers(trainingWithOutliers, config.removeOutliers)
@@ -313,8 +321,25 @@ object HousePricesPipeline {
         imputerStages ++ indexerStages ++ Seq(assembler, model)
 
       case "xgb" =>
+        val encodedCategoricalColumns = categoricalColumns.map(c => s"${c}_xgb_onehot")
+        val encoderStages =
+          if (config.xgbOneHot && categoricalColumns.nonEmpty) {
+            Seq(
+              new OneHotEncoder()
+                .setInputCols(indexedCategoricalColumns)
+                .setOutputCols(encodedCategoricalColumns)
+                .setDropLast(false)
+                .setHandleInvalid("keep")
+            )
+          } else {
+            Seq.empty[PipelineStage]
+          }
+        val xgbFeatureColumns =
+          if (config.xgbOneHot) imputedNumericColumns ++ encodedCategoricalColumns
+          else imputedNumericColumns ++ indexedCategoricalColumns
+
         val assembler = new VectorAssembler()
-          .setInputCols(imputedNumericColumns ++ indexedCategoricalColumns)
+          .setInputCols(xgbFeatureColumns)
           .setOutputCol("features_sparse_or_dense")
           .setHandleInvalid("keep")
 
@@ -339,7 +364,7 @@ object HousePricesPipeline {
           .setVerbosity(0)
           .setSeed(config.seed)
 
-        imputerStages ++ indexerStages ++ Seq(assembler, densifier, model)
+        imputerStages ++ indexerStages ++ encoderStages ++ Seq(assembler, densifier, model)
     }
 
     new Pipeline().setStages(stages.toArray)
@@ -517,12 +542,15 @@ object HousePricesPipeline {
       case "--elastic-net" :: value :: tail => parseArgs(tail, config.copy(elasticNetParam = value.toDouble))
       case "--xgb-rounds" :: value :: tail => parseArgs(tail, config.copy(xgbRounds = value.toInt))
       case "--xgb-eta" :: value :: tail => parseArgs(tail, config.copy(xgbEta = value.toDouble))
+      case "--xgb-one-hot" :: tail => parseArgs(tail, config.copy(xgbOneHot = true))
+      case "--xgb-indexed" :: tail => parseArgs(tail, config.copy(xgbOneHot = false))
       case "--ensemble-xgb-weight" :: value :: tail => parseArgs(tail, config.copy(ensembleXgbWeight = value.toDouble))
       case "--advanced-features" :: tail => parseArgs(tail, config.copy(advancedFeatures = true))
       case "--basic-features" :: tail => parseArgs(tail, config.copy(advancedFeatures = false))
       case "--remove-outliers" :: tail => parseArgs(tail, config.copy(removeOutliers = true))
       case "--keep-outliers" :: tail => parseArgs(tail, config.copy(removeOutliers = false))
       case "--validation-only" :: tail => parseArgs(tail, config.copy(validationOnly = true))
+      case "--skip-validation" :: tail => parseArgs(tail, config.copy(skipValidation = true))
       case "--validation-seeds" :: value :: tail =>
         parseArgs(tail, config.copy(validationSeeds = value.split(",").filter(_.nonEmpty).map(_.toLong).toSeq))
       case "--seed" :: value :: tail => parseArgs(tail, config.copy(seed = value.toLong))
@@ -530,7 +558,7 @@ object HousePricesPipeline {
         println(
           s"""
              |Usage:
-             |  housePrices/run [--algo lr|rf|gbt|xgb|ensemble] [--validation-only] [--validation-seeds 42,1337,2026] [--advanced-features|--basic-features] [--remove-outliers|--keep-outliers] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--xgb-rounds n] [--xgb-eta x] [--ensemble-xgb-weight x] [--train path] [--test path] [--output path] [--model path] [--seed n]
+             |  housePrices/run [--algo lr|rf|gbt|xgb|ensemble] [--validation-only|--skip-validation] [--validation-seeds 42,1337,2026] [--advanced-features|--basic-features] [--remove-outliers|--keep-outliers] [--xgb-one-hot|--xgb-indexed] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--xgb-rounds n] [--xgb-eta x] [--ensemble-xgb-weight x] [--train path] [--test path] [--output path] [--model path] [--seed n]
              |
              |Defaults:
              |  --algo ${config.algo}
@@ -543,6 +571,7 @@ object HousePricesPipeline {
              |  --elastic-net ${config.elasticNetParam}
              |  --xgb-rounds ${config.xgbRounds}
              |  --xgb-eta ${config.xgbEta}
+             |  --xgb-one-hot ${config.xgbOneHot}
              |  --ensemble-xgb-weight ${config.ensembleXgbWeight}
              |  --advanced-features ${config.advancedFeatures}
              |  --keep-outliers ${!config.removeOutliers}
