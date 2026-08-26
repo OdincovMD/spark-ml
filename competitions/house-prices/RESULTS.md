@@ -118,7 +118,7 @@ The observed public score was `0.12282`, within `0.00001` of the estimate. Blend
 ## Ensemble 006 - Higher-Capacity Indexed XGBoost
 
 - Date: 2026-08-22
-- Kaggle public score: pending
+- Kaggle public score: `0.12208`
 - Submission: `output/submission_lr_xgb_v6_r800_w67.csv`
 - Suggested message: `Scala Spark ElasticNet 33 XGBoost 67 indexed 800-round log blend`
 - Blend: 33% ElasticNet and 67% XGBoost predictions in log-price space.
@@ -131,6 +131,25 @@ Three-seed validation comparison at the same 50% XGBoost weight:
 - Improvement: `0.00092` mean log-RMSE; the 800-round model improved all three validation seeds.
 
 The leaderboard-calibrated 67% weight is retained for the first public probe because Ensemble 004 and 005 showed that random-holdout validation systematically underweighted XGBoost. The RMS log-distance from Ensemble 005 is `0.00790716`.
+
+The observed public score improved Ensemble 005 by `0.00074`, confirming that the additional boosting rounds generalized to the leaderboard.
+
+## Ensemble 007 - Indexed and One-Hot XGBoost Diversity
+
+- Date: 2026-08-26
+- Kaggle public score: pending
+- Submission: `output/submission_lr_xgb_v7_triple_w33_47_20.csv`
+- Suggested message: `Scala Spark LR 33 indexed XGB 47 one-hot XGB 20 log blend`
+- Blend: 33% ElasticNet, 47% indexed-categorical XGBoost, and 20% one-hot XGBoost in log-price space.
+- Both XGBoost models: 800 rounds, eta `0.03`, depth `3`.
+
+The full three-component grid used 0.1 weight increments on the same seeds `42`, `1337`, and `2026`:
+
+- Best mean triple blend: 50% LR, 30% indexed XGBoost, 20% one-hot XGBoost; log-RMSE `0.11493`.
+- Best comparable two-model blend: 50% LR, 50% indexed XGBoost; log-RMSE `0.11508`.
+- Incremental validation improvement from one-hot diversity: `0.00015`.
+
+The submission preserves the leaderboard-calibrated 33% LR share from Ensemble 006. Within the 67% tree share, it uses a conservative 47:20 indexed/one-hot split because one-hot helped two validation seeds but hurt seed `1337`.
 
 New Kaggle scores should be added here after submission with:
 

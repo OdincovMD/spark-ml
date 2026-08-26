@@ -46,6 +46,7 @@ object HousePricesPipeline {
       xgbEta: Double = 0.03,
       xgbOneHot: Boolean = false,
       ensembleXgbWeight: Double = 0.67,
+      ensembleOneHotWeight: Double = 0.0,
       advancedFeatures: Boolean = false,
       removeOutliers: Boolean = false,
       validationOnly: Boolean = false,
@@ -56,11 +57,16 @@ object HousePricesPipeline {
 
   def main(args: Array[String]): Unit = {
     val config = parseArgs(args.toList, Config())
-    require(Set("lr", "rf", "gbt", "xgb", "ensemble").contains(config.algo), s"Unknown --algo: ${config.algo}")
+    require(Set("lr", "rf", "gbt", "xgb", "ensemble", "ensemble3").contains(config.algo), s"Unknown --algo: ${config.algo}")
     require(config.maxBins >= 32, "--max-bins must be at least 32")
     require(config.xgbRounds > 0, "--xgb-rounds must be positive")
     require(config.xgbEta > 0.0, "--xgb-eta must be positive")
     require(config.ensembleXgbWeight >= 0.0 && config.ensembleXgbWeight <= 1.0, "--ensemble-xgb-weight must be between 0 and 1")
+    require(config.ensembleOneHotWeight >= 0.0 && config.ensembleOneHotWeight <= 1.0, "--ensemble-one-hot-weight must be between 0 and 1")
+    require(
+      config.algo != "ensemble3" || config.ensembleXgbWeight + config.ensembleOneHotWeight <= 1.0,
+      "For --algo ensemble3, indexed and one-hot XGBoost weights must sum to at most 1"
+    )
     require(!(config.validationOnly && config.skipValidation), "--validation-only and --skip-validation cannot be used together")
 
     val spark = SparkSession
@@ -100,6 +106,8 @@ object HousePricesPipeline {
         else Seq(config.seed)
       if (config.algo == "ensemble") {
         runEnsemble(numericColumns, categoricalColumns, preparedTrain, preparedTest, seeds, config)
+      } else if (config.algo == "ensemble3") {
+        runTripleEnsemble(numericColumns, categoricalColumns, preparedTrain, preparedTest, seeds, config)
       } else {
         runSingleModel(numericColumns, categoricalColumns, preparedTrain, preparedTest, seeds, config)
       }
@@ -200,6 +208,116 @@ object HousePricesPipeline {
     lrPredictions
       .select(lrColumns: _*)
       .join(xgbPredictions.select(col(IdCol), col("prediction").as("xgb_prediction")), Seq(IdCol), "inner")
+  }
+
+  private final case class TripleWeights(lr: Double, indexed: Double, oneHot: Double) {
+    def label: String = f"LR $lr%.1f, indexed $indexed%.1f, one-hot $oneHot%.1f"
+    def column: String = f"rmse_${lr * 10}%.0f_${indexed * 10}%.0f_${oneHot * 10}%.0f"
+  }
+
+  private def runTripleEnsemble(
+      numericColumns: Array[String],
+      categoricalColumns: Array[String],
+      preparedTrain: DataFrame,
+      preparedTest: DataFrame,
+      seeds: Seq[Long],
+      config: Config
+  ): Unit = {
+    val weights = for {
+      lrTenths <- 0 to 10
+      indexedTenths <- 0 to (10 - lrTenths)
+      oneHotTenths = 10 - lrTenths - indexedTenths
+    } yield TripleWeights(lrTenths / 10.0, indexedTenths / 10.0, oneHotTenths / 10.0)
+
+    val scoresBySeed = seeds.map { seed =>
+      val Array(trainingWithOutliers, validation) = preparedTrain.randomSplit(Array(0.8, 0.2), seed)
+      val training = filterTrainingOutliers(trainingWithOutliers, config.removeOutliers)
+      val lrModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "lr", seed = seed)).fit(training)
+      val indexedModel = buildPipeline(
+        numericColumns,
+        categoricalColumns,
+        config.copy(algo = "xgb", xgbOneHot = false, seed = seed)
+      ).fit(training)
+      val oneHotModel = buildPipeline(
+        numericColumns,
+        categoricalColumns,
+        config.copy(algo = "xgb", xgbOneHot = true, seed = seed)
+      ).fit(training)
+      val joined = joinTriplePredictions(
+        lrModel.transform(validation),
+        indexedModel.transform(validation),
+        oneHotModel.transform(validation),
+        includeLabel = true
+      )
+      val scoreColumns = weights.map { weight =>
+        val prediction =
+          col("lr_prediction") * lit(weight.lr) +
+            col("indexed_prediction") * lit(weight.indexed) +
+            col("onehot_prediction") * lit(weight.oneHot)
+        sqrt(avg(pow(col(LabelCol) - prediction, 2.0))).as(weight.column)
+      }
+      val row = joined.agg(scoreColumns.head, scoreColumns.tail: _*).head()
+      val scores = weights.zipWithIndex.map { case (weight, index) => weight -> row.getDouble(index) }.toMap
+      println(s"Triple ensemble validation seed: $seed")
+      scores.toSeq.sortBy(_._2).take(10).foreach { case (weight, score) =>
+        println(f"  ${weight.label}: $score%.5f")
+      }
+      scores
+    }
+
+    if (scoresBySeed.nonEmpty) {
+      println("Triple ensemble best mean validation log-RMSE:")
+      val summaries = weights.map { weight =>
+        val scores = scoresBySeed.map(_(weight))
+        val mean = scores.sum / scores.size
+        val stddev = math.sqrt(scores.map(score => math.pow(score - mean, 2.0)).sum / scores.size)
+        (weight, mean, stddev)
+      }
+      summaries.sortBy(_._2).take(15).foreach { case (weight, mean, stddev) =>
+        println(f"  ${weight.label}: $mean%.5f (stddev $stddev%.5f)")
+      }
+    }
+
+    if (!config.validationOnly) {
+      val finalTrain = filterTrainingOutliers(preparedTrain, config.removeOutliers)
+      val lrModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "lr")).fit(finalTrain)
+      val indexedModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "xgb", xgbOneHot = false)).fit(finalTrain)
+      val oneHotModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "xgb", xgbOneHot = true)).fit(finalTrain)
+      lrModel.write.overwrite().save(s"${config.modelPath}_lr")
+      indexedModel.write.overwrite().save(s"${config.modelPath}_indexed_xgb")
+      oneHotModel.write.overwrite().save(s"${config.modelPath}_onehot_xgb")
+      val lrWeight = 1.0 - config.ensembleXgbWeight - config.ensembleOneHotWeight
+      val joined = joinTriplePredictions(
+        lrModel.transform(preparedTest),
+        indexedModel.transform(preparedTest),
+        oneHotModel.transform(preparedTest),
+        includeLabel = false
+      ).withColumn(
+        "prediction",
+        col("lr_prediction") * lit(lrWeight) +
+          col("indexed_prediction") * lit(config.ensembleXgbWeight) +
+          col("onehot_prediction") * lit(config.ensembleOneHotWeight)
+      )
+      writeSubmission(joined, config.outputPath)
+      println(f"Triple ensemble weights: LR $lrWeight%.2f, indexed XGBoost ${config.ensembleXgbWeight}%.2f, one-hot XGBoost ${config.ensembleOneHotWeight}%.2f")
+      println(s"Models saved under prefix: ${config.modelPath}")
+      println(s"Submission saved: ${config.outputPath}")
+    }
+  }
+
+  private def joinTriplePredictions(
+      lrPredictions: DataFrame,
+      indexedPredictions: DataFrame,
+      oneHotPredictions: DataFrame,
+      includeLabel: Boolean
+  ): DataFrame = {
+    val lrColumns =
+      if (includeLabel) Seq(col(IdCol), col(LabelCol), col("prediction").as("lr_prediction"))
+      else Seq(col(IdCol), col("prediction").as("lr_prediction"))
+    lrPredictions
+      .select(lrColumns: _*)
+      .join(indexedPredictions.select(col(IdCol), col("prediction").as("indexed_prediction")), Seq(IdCol), "inner")
+      .join(oneHotPredictions.select(col(IdCol), col("prediction").as("onehot_prediction")), Seq(IdCol), "inner")
   }
 
   private def evaluateLogRmse(predictions: DataFrame): Double =
@@ -545,6 +663,7 @@ object HousePricesPipeline {
       case "--xgb-one-hot" :: tail => parseArgs(tail, config.copy(xgbOneHot = true))
       case "--xgb-indexed" :: tail => parseArgs(tail, config.copy(xgbOneHot = false))
       case "--ensemble-xgb-weight" :: value :: tail => parseArgs(tail, config.copy(ensembleXgbWeight = value.toDouble))
+      case "--ensemble-one-hot-weight" :: value :: tail => parseArgs(tail, config.copy(ensembleOneHotWeight = value.toDouble))
       case "--advanced-features" :: tail => parseArgs(tail, config.copy(advancedFeatures = true))
       case "--basic-features" :: tail => parseArgs(tail, config.copy(advancedFeatures = false))
       case "--remove-outliers" :: tail => parseArgs(tail, config.copy(removeOutliers = true))
@@ -558,7 +677,7 @@ object HousePricesPipeline {
         println(
           s"""
              |Usage:
-             |  housePrices/run [--algo lr|rf|gbt|xgb|ensemble] [--validation-only|--skip-validation] [--validation-seeds 42,1337,2026] [--advanced-features|--basic-features] [--remove-outliers|--keep-outliers] [--xgb-one-hot|--xgb-indexed] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--xgb-rounds n] [--xgb-eta x] [--ensemble-xgb-weight x] [--train path] [--test path] [--output path] [--model path] [--seed n]
+             |  housePrices/run [--algo lr|rf|gbt|xgb|ensemble|ensemble3] [--validation-only|--skip-validation] [--validation-seeds 42,1337,2026] [--advanced-features|--basic-features] [--remove-outliers|--keep-outliers] [--xgb-one-hot|--xgb-indexed] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--xgb-rounds n] [--xgb-eta x] [--ensemble-xgb-weight x] [--ensemble-one-hot-weight x] [--train path] [--test path] [--output path] [--model path] [--seed n]
              |
              |Defaults:
              |  --algo ${config.algo}
@@ -573,6 +692,7 @@ object HousePricesPipeline {
              |  --xgb-eta ${config.xgbEta}
              |  --xgb-one-hot ${config.xgbOneHot}
              |  --ensemble-xgb-weight ${config.ensembleXgbWeight}
+             |  --ensemble-one-hot-weight ${config.ensembleOneHotWeight}
              |  --advanced-features ${config.advancedFeatures}
              |  --keep-outliers ${!config.removeOutliers}
              |  --train ${config.trainPath}
