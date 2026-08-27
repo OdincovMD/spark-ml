@@ -44,6 +44,12 @@ object HousePricesPipeline {
       elasticNetParam: Double = 0.8,
       xgbRounds: Int = 800,
       xgbEta: Double = 0.03,
+      xgbSubsample: Double = 0.8,
+      xgbColsample: Double = 0.8,
+      xgbMinChildWeight: Double = 1.0,
+      xgbAlpha: Double = 0.0,
+      xgbLambda: Double = 1.0,
+      xgbGamma: Double = 0.0,
       xgbOneHot: Boolean = false,
       ensembleXgbWeight: Double = 0.67,
       ensembleOneHotWeight: Double = 0.0,
@@ -52,6 +58,7 @@ object HousePricesPipeline {
       validationOnly: Boolean = false,
       skipValidation: Boolean = false,
       validationSeeds: Seq[Long] = Seq.empty,
+      xgbModelSeeds: Seq[Long] = Seq.empty,
       seed: Long = 42L
   )
 
@@ -61,6 +68,12 @@ object HousePricesPipeline {
     require(config.maxBins >= 32, "--max-bins must be at least 32")
     require(config.xgbRounds > 0, "--xgb-rounds must be positive")
     require(config.xgbEta > 0.0, "--xgb-eta must be positive")
+    require(config.xgbSubsample > 0.0 && config.xgbSubsample <= 1.0, "--xgb-subsample must be in (0, 1]")
+    require(config.xgbColsample > 0.0 && config.xgbColsample <= 1.0, "--xgb-colsample must be in (0, 1]")
+    require(config.xgbMinChildWeight >= 0.0, "--xgb-min-child-weight must be non-negative")
+    require(config.xgbAlpha >= 0.0, "--xgb-alpha must be non-negative")
+    require(config.xgbLambda >= 0.0, "--xgb-lambda must be non-negative")
+    require(config.xgbGamma >= 0.0, "--xgb-gamma must be non-negative")
     require(config.ensembleXgbWeight >= 0.0 && config.ensembleXgbWeight <= 1.0, "--ensemble-xgb-weight must be between 0 and 1")
     require(config.ensembleOneHotWeight >= 0.0 && config.ensembleOneHotWeight <= 1.0, "--ensemble-one-hot-weight must be between 0 and 1")
     require(
@@ -159,8 +172,15 @@ object HousePricesPipeline {
       val Array(trainingWithOutliers, validation) = preparedTrain.randomSplit(Array(0.8, 0.2), seed)
       val training = filterTrainingOutliers(trainingWithOutliers, config.removeOutliers)
       val lrModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "lr", seed = seed)).fit(training)
-      val xgbModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "xgb", seed = seed)).fit(training)
-      val joined = joinPredictions(lrModel.transform(validation), xgbModel.transform(validation), includeLabel = true)
+      val modelSeeds = if (config.xgbModelSeeds.nonEmpty) config.xgbModelSeeds else Seq(seed)
+      val xgbModels = modelSeeds.map { modelSeed =>
+        buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "xgb", seed = modelSeed)).fit(training)
+      }
+      val joined = joinBaggedPredictions(
+        lrModel.transform(validation),
+        xgbModels.map(_.transform(validation)),
+        includeLabel = true
+      )
       val scoreColumns = weights.map { weight =>
         val prediction = col("lr_prediction") * lit(1.0 - weight) + col("xgb_prediction") * lit(weight)
         sqrt(avg(pow(col(LabelCol) - prediction, 2.0))).as(weightColumn(weight))
@@ -185,10 +205,19 @@ object HousePricesPipeline {
     if (!config.validationOnly) {
       val finalTrain = filterTrainingOutliers(preparedTrain, config.removeOutliers)
       val lrModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "lr")).fit(finalTrain)
-      val xgbModel = buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "xgb")).fit(finalTrain)
+      val modelSeeds = if (config.xgbModelSeeds.nonEmpty) config.xgbModelSeeds else Seq(config.seed)
+      val xgbModels = modelSeeds.map { modelSeed =>
+        buildPipeline(numericColumns, categoricalColumns, config.copy(algo = "xgb", seed = modelSeed)).fit(finalTrain)
+      }
       lrModel.write.overwrite().save(s"${config.modelPath}_lr")
-      xgbModel.write.overwrite().save(s"${config.modelPath}_xgb")
-      val joined = joinPredictions(lrModel.transform(preparedTest), xgbModel.transform(preparedTest), includeLabel = false)
+      xgbModels.zip(modelSeeds).foreach { case (model, modelSeed) =>
+        model.write.overwrite().save(s"${config.modelPath}_xgb_seed_$modelSeed")
+      }
+      val joined = joinBaggedPredictions(
+        lrModel.transform(preparedTest),
+        xgbModels.map(_.transform(preparedTest)),
+        includeLabel = false
+      )
         .withColumn(
           "prediction",
           col("lr_prediction") * lit(1.0 - config.ensembleXgbWeight) +
@@ -196,9 +225,31 @@ object HousePricesPipeline {
         )
       writeSubmission(joined, config.outputPath)
       println(f"Ensemble XGBoost weight: ${config.ensembleXgbWeight}%.2f")
-      println(s"Models saved: ${config.modelPath}_lr and ${config.modelPath}_xgb")
+      println(s"XGBoost model seeds: ${modelSeeds.mkString(",")}")
+      println(s"Models saved under prefix: ${config.modelPath}")
       println(s"Submission saved: ${config.outputPath}")
     }
+  }
+
+  private def joinBaggedPredictions(
+      lrPredictions: DataFrame,
+      xgbPredictions: Seq[DataFrame],
+      includeLabel: Boolean
+  ): DataFrame = {
+    require(xgbPredictions.nonEmpty, "At least one XGBoost prediction frame is required")
+    val lrColumns =
+      if (includeLabel) Seq(col(IdCol), col(LabelCol), col("prediction").as("lr_prediction"))
+      else Seq(col(IdCol), col("prediction").as("lr_prediction"))
+    val joined = xgbPredictions.zipWithIndex.foldLeft(lrPredictions.select(lrColumns: _*)) {
+      case (acc, (predictions, index)) =>
+        acc.join(
+          predictions.select(col(IdCol), col("prediction").as(s"xgb_prediction_$index")),
+          Seq(IdCol),
+          "inner"
+        )
+    }
+    val predictionColumns = xgbPredictions.indices.map(index => col(s"xgb_prediction_$index"))
+    joined.withColumn("xgb_prediction", predictionColumns.reduce(_ + _) / lit(predictionColumns.size.toDouble))
   }
 
   private def joinPredictions(lrPredictions: DataFrame, xgbPredictions: DataFrame, includeLabel: Boolean): DataFrame = {
@@ -474,10 +525,12 @@ object HousePricesPipeline {
           .setNumRound(config.xgbRounds)
           .setEta(config.xgbEta)
           .setMaxDepth(config.maxDepth)
-          .setMinChildWeight(1.0)
-          .setSubsample(0.8)
-          .setColsampleBytree(0.8)
-          .setLambda(1.0)
+          .setMinChildWeight(config.xgbMinChildWeight)
+          .setSubsample(config.xgbSubsample)
+          .setColsampleBytree(config.xgbColsample)
+          .setAlpha(config.xgbAlpha)
+          .setLambda(config.xgbLambda)
+          .setGamma(config.xgbGamma)
           .setTreeMethod("hist")
           .setVerbosity(0)
           .setSeed(config.seed)
@@ -660,6 +713,12 @@ object HousePricesPipeline {
       case "--elastic-net" :: value :: tail => parseArgs(tail, config.copy(elasticNetParam = value.toDouble))
       case "--xgb-rounds" :: value :: tail => parseArgs(tail, config.copy(xgbRounds = value.toInt))
       case "--xgb-eta" :: value :: tail => parseArgs(tail, config.copy(xgbEta = value.toDouble))
+      case "--xgb-subsample" :: value :: tail => parseArgs(tail, config.copy(xgbSubsample = value.toDouble))
+      case "--xgb-colsample" :: value :: tail => parseArgs(tail, config.copy(xgbColsample = value.toDouble))
+      case "--xgb-min-child-weight" :: value :: tail => parseArgs(tail, config.copy(xgbMinChildWeight = value.toDouble))
+      case "--xgb-alpha" :: value :: tail => parseArgs(tail, config.copy(xgbAlpha = value.toDouble))
+      case "--xgb-lambda" :: value :: tail => parseArgs(tail, config.copy(xgbLambda = value.toDouble))
+      case "--xgb-gamma" :: value :: tail => parseArgs(tail, config.copy(xgbGamma = value.toDouble))
       case "--xgb-one-hot" :: tail => parseArgs(tail, config.copy(xgbOneHot = true))
       case "--xgb-indexed" :: tail => parseArgs(tail, config.copy(xgbOneHot = false))
       case "--ensemble-xgb-weight" :: value :: tail => parseArgs(tail, config.copy(ensembleXgbWeight = value.toDouble))
@@ -672,16 +731,19 @@ object HousePricesPipeline {
       case "--skip-validation" :: tail => parseArgs(tail, config.copy(skipValidation = true))
       case "--validation-seeds" :: value :: tail =>
         parseArgs(tail, config.copy(validationSeeds = value.split(",").filter(_.nonEmpty).map(_.toLong).toSeq))
+      case "--xgb-model-seeds" :: value :: tail =>
+        parseArgs(tail, config.copy(xgbModelSeeds = value.split(",").filter(_.nonEmpty).map(_.toLong).toSeq))
       case "--seed" :: value :: tail => parseArgs(tail, config.copy(seed = value.toLong))
       case "--help" :: _ =>
         println(
           s"""
              |Usage:
-             |  housePrices/run [--algo lr|rf|gbt|xgb|ensemble|ensemble3] [--validation-only|--skip-validation] [--validation-seeds 42,1337,2026] [--advanced-features|--basic-features] [--remove-outliers|--keep-outliers] [--xgb-one-hot|--xgb-indexed] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--xgb-rounds n] [--xgb-eta x] [--ensemble-xgb-weight x] [--ensemble-one-hot-weight x] [--train path] [--test path] [--output path] [--model path] [--seed n]
+             |  housePrices/run [--algo lr|rf|gbt|xgb|ensemble|ensemble3] [--validation-only|--skip-validation] [--validation-seeds 42,1337,2026] [--xgb-model-seeds 42,1337,2026] [--advanced-features|--basic-features] [--remove-outliers|--keep-outliers] [--xgb-one-hot|--xgb-indexed] [--max-bins n] [--num-trees n] [--max-depth n] [--max-iter n] [--reg-param x] [--elastic-net x] [--xgb-rounds n] [--xgb-eta x] [--xgb-subsample x] [--xgb-colsample x] [--xgb-min-child-weight x] [--xgb-alpha x] [--xgb-lambda x] [--xgb-gamma x] [--ensemble-xgb-weight x] [--ensemble-one-hot-weight x] [--train path] [--test path] [--output path] [--model path] [--seed n]
              |
              |Defaults:
              |  --algo ${config.algo}
              |  --validation-only ${config.validationOnly}
+             |  --xgb-model-seeds ${config.xgbModelSeeds.mkString(",")}
              |  --max-bins ${config.maxBins}
              |  --num-trees ${config.numTrees}
              |  --max-depth ${config.maxDepth}
@@ -690,6 +752,12 @@ object HousePricesPipeline {
              |  --elastic-net ${config.elasticNetParam}
              |  --xgb-rounds ${config.xgbRounds}
              |  --xgb-eta ${config.xgbEta}
+             |  --xgb-subsample ${config.xgbSubsample}
+             |  --xgb-colsample ${config.xgbColsample}
+             |  --xgb-min-child-weight ${config.xgbMinChildWeight}
+             |  --xgb-alpha ${config.xgbAlpha}
+             |  --xgb-lambda ${config.xgbLambda}
+             |  --xgb-gamma ${config.xgbGamma}
              |  --xgb-one-hot ${config.xgbOneHot}
              |  --ensemble-xgb-weight ${config.ensembleXgbWeight}
              |  --ensemble-one-hot-weight ${config.ensembleOneHotWeight}

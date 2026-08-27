@@ -137,7 +137,7 @@ The observed public score improved Ensemble 005 by `0.00074`, confirming that th
 ## Ensemble 007 - Indexed and One-Hot XGBoost Diversity
 
 - Date: 2026-08-26
-- Kaggle public score: pending
+- Kaggle public score: `0.12226`
 - Submission: `output/submission_lr_xgb_v7_triple_w33_47_20.csv`
 - Suggested message: `Scala Spark LR 33 indexed XGB 47 one-hot XGB 20 log blend`
 - Blend: 33% ElasticNet, 47% indexed-categorical XGBoost, and 20% one-hot XGBoost in log-price space.
@@ -150,6 +150,29 @@ The full three-component grid used 0.1 weight increments on the same seeds `42`,
 - Incremental validation improvement from one-hot diversity: `0.00015`.
 
 The submission preserves the leaderboard-calibrated 33% LR share from Ensemble 006. Within the 67% tree share, it uses a conservative 47:20 indexed/one-hot split because one-hot helped two validation seeds but hurt seed `1337`.
+
+The public score regressed by `0.00018` versus Ensemble 006. Quadratic calibration along the Ensemble 006 to 007 prediction direction places the unconstrained optimum at a negative `-0.0192` one-hot weight, so one-hot XGBoost is rejected for future submissions.
+
+## Probe - Indexed XGBoost Seed Bagging
+
+- Date: 2026-08-27
+- Model seeds: `42`, `1337`, and `2026` averaged in log-price space.
+- Holdout seed `42`, best bagged blend: log-RMSE `0.11177` at 40% XGBoost.
+- Identical holdout, single seed-42 model: log-RMSE `0.11149` at 40% XGBoost.
+
+Conclusion: seed bagging regressed the control holdout by `0.00028`, so it was rejected before creating a Kaggle submission.
+
+## Probe - Stronger XGBoost Regularization
+
+- Date: 2026-08-27
+- Profile: subsample `0.65`, column sample `0.65`, min child weight `2.0`, alpha `0.05`; other Ensemble 006 parameters retained.
+- Best common blend weight: 50% XGBoost.
+- Regularized log-RMSE: `0.11218`, `0.11787`, `0.11588`; mean `0.11531`.
+- Ensemble 006 profile at the same weight: `0.11153`, `0.11761`, `0.11610`; mean `0.11508`.
+
+Conclusion: stronger regularization improved seed `2026` but regressed the other two splits and the mean by `0.00023`. No submission was created.
+
+Public-score quadratic calibration also places the optimal indexed-XGBoost weight for Ensemble 006 at `0.67679`, with an estimated score of `0.12207898`. This is effectively identical to the current 67% weight and leaves no meaningful blend-weight improvement.
 
 New Kaggle scores should be added here after submission with:
 
