@@ -1,131 +1,94 @@
-# Spark ML Kaggle Lab
+# Spark ML · Kaggle Lab
 
-Scala/Spark workspace for Kaggle competitions. Each competition lives in its own folder under `competitions/` and can be wired as a separate sbt subproject.
+**Scala, Apache Spark и воспроизводимые эксперименты машинного обучения.**
 
-## Competitions
+Лаборатория из четырёх соревнований Kaggle: от прогнозирования выживаемости и стоимости недвижимости до распознавания рукописных цифр. Проект объединяет подготовку признаков, оценку моделей и генерацию submission CSV в отдельных sbt-модулях.
 
-Started:
+В новых модулях **Spaceship Titanic** и **Digit Recognizer** обучение и пакетный инференс разделены: сохранённый `PipelineModel` содержит обработку признаков и классификатор. Для новых предсказаний достаточно модели и входного CSV.
 
-- [Titanic - Machine Learning from Disaster](https://www.kaggle.com/competitions/titanic): binary classification, feature engineering, model comparison, and post-processing.
-- [House Prices - Advanced Regression Techniques](https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques): tabular regression with `SalePrice` target and `Id,SalePrice` submission format.
+## Соревнования
 
-Both are Kaggle Getting Started competitions with small enough data to iterate quickly while still exercising Spark CSV IO, feature engineering, ML pipelines, evaluation, and Kaggle submission formatting.
+| Модуль | Задача | Модели | Запуск и результаты |
+| --- | --- | --- | --- |
+| `titanic` | Выживание пассажиров; accuracy/AUC | RandomForest, GBT, LogisticRegression, XGBoost, ансамбли | [Руководство](competitions/titanic/README.md) · [Результаты](competitions/titanic/RESULTS.md) |
+| `housePrices` | Стоимость недвижимости; log-RMSE | ElasticNet, RandomForest, GBT, XGBoost, ансамбли | [Руководство](competitions/house-prices/README.md) · [Результаты](competitions/house-prices/RESULTS.md) |
+| `spaceshipTitanic` | Перенос пассажиров в другое измерение; accuracy | RandomForest с признаками каюты и расходов | [Руководство](competitions/spaceship-titanic/README.md) · [Статус](competitions/spaceship-titanic/RESULTS.md) |
+| `digitRecognizer` | Цифры MNIST, 10 классов; accuracy | Multinomial LogisticRegression, 784 пикселя | [Руководство](competitions/digit-recognizer/README.md) · [Статус](competitions/digit-recognizer/RESULTS.md) |
 
+Новые задачи выбраны из [Spaceship Titanic](https://www.kaggle.com/competitions/spaceship-titanic) и [Digit Recognizer](https://www.kaggle.com/competitions/digit-recognizer): они дополняют регрессию бинарной и многоклассовой классификацией. Публичные оценки новых моделей ещё не измерены; результаты прежних экспериментов находятся в соответствующих `RESULTS.md`.
 
-## Layout
+## Быстрый старт
+
+Нужны **JDK 11** и **sbt 1.11.3**. Scala **2.12.18** и Spark **3.5.9** заданы в `build.sbt`. Для скачивания данных понадобится настроенный [Kaggle CLI](https://github.com/Kaggle/kaggle-api).
+
+Из корня репозитория:
+
+```bash
+# Собрать все модули.
+./bin/sbt-local compile
+
+# Посмотреть команды нового пайплайна без загрузки данных.
+./bin/sbt-local "spaceshipTitanic/run --help"
+
+# Скачать данные со своей учётной записью Kaggle.
+kaggle competitions download -c spaceship-titanic -p competitions/spaceship-titanic/data/raw
+unzip competitions/spaceship-titanic/data/raw/spaceship-titanic.zip -d competitions/spaceship-titanic/data/raw
+
+# Оценить на holdout, обучить на всех размеченных строках и сохранить модель.
+./bin/sbt-local "spaceshipTitanic/run train"
+
+# Загрузить модель и получить предсказания без повторного обучения.
+./bin/sbt-local "spaceshipTitanic/run predict"
+```
+
+Результат: `competitions/spaceship-titanic/output/submission.csv` с колонками `PassengerId,Transported`. Перед скачиванием проверьте условия участия на странице соревнования. Данные и credentials не входят в репозиторий.
+
+`bin/sbt-local` хранит кеши зависимостей в рабочем каталоге. Первый запуск требует сети; для компиляции данные Kaggle не нужны. При `sbt run` пути `data/raw/`, `models/` и `output/` отсчитываются **от каталога выбранного соревнования**.
+
+## Обучение → модель → инференс
+
+```mermaid
+flowchart LR
+    A[train.csv] --> B[Разделение train / validation]
+    B --> C[Оценка accuracy на holdout]
+    A --> D[Обучение полного PipelineModel]
+    D --> E[models/]
+    E --> F[predict: load + transform]
+    G[test.csv / новые строки] --> F
+    F --> H[output/submission.csv]
+```
+
+В новых модулях `train` сохраняет модель, `predict` выполняет только инференс, `run` объединяет оба шага. Импутация и категоризация обучаются внутри пайплайна: при проверке на holdout используется только обучающая часть. Существующий файл или модель защищены от перезаписи; для повторного запуска задайте новый путь либо `--overwrite`.
+
+Titanic и House Prices используют свои экспериментальные команды: `./bin/sbt-local "titanic/run"` и `./bin/sbt-local "housePrices/run"`. Их параметры и особенности описаны в руководствах модулей.
+
+## Структура
 
 ```text
-.
-├── build.sbt
-├── bin/sbt-local
-├── competitions/
-│   ├── titanic/
-│   │   ├── README.md
-│   │   ├── data/
-│   │   │   ├── raw/
-│   │   │   ├── interim/
-│   │   │   └── processed/
-│   │   ├── models/
-│   │   ├── output/
-│   │   └── src/main/
-│   │       ├── resources/log4j2.properties
-│   │       └── scala/kaggle/sparkml/titanic/TitanicPipeline.scala
-│   └── house-prices/
-│       ├── README.md
-│       ├── RESULTS.md
-│       ├── data/
-│       ├── models/
-│       ├── output/
-│       └── src/main/scala/kaggle/sparkml/houseprices/HousePricesPipeline.scala
-└── project/build.properties
+spark-ml/
+├── build.sbt                 # Модули и зависимости
+├── bin/sbt-local             # Обёртка sbt с локальными кешами
+├── docs/README.md            # Архитектура, CLI, проверка и разработка
+├── modules/core/             # Общий lifecycle новых классификаторов
+└── competitions/
+    ├── titanic/
+    ├── house-prices/
+    ├── spaceship-titanic/
+    └── digit-recognizer/
+        ├── README.md        # Данные, обучение, инференс
+        ├── RESULTS.md       # Статус и журнал экспериментов
+        ├── data/raw/        # Входные данные, не коммитятся
+        ├── models/          # Сохранённые пайплайны
+        ├── output/          # Submission CSV
+        └── src/             # Scala-код, ресурсы и тесты новых модулей
 ```
 
-## Prerequisites
-
-- Java 8+ on `PATH`.
-- sbt and Metals.
-- Kaggle CLI, if you want to download data and submit from the terminal.
-
-The local sbt wrapper keeps launcher and dependency caches inside this repository, which is useful in restricted environments:
+## Проверка и разработка
 
 ```bash
-./bin/sbt-local "titanic/compile"
-./bin/sbt-local "housePrices/compile"
+./bin/sbt-local "core/test" "spaceshipTitanic/test" "digitRecognizer/test"
 ```
 
-## Kaggle Setup
+Тесты используют небольшие синтетические данные и проверяют сохранение/загрузку модели, инференс без `train.csv`, порядок `ImageId`, ведущие нули `PassengerId`, формат submission и ошибочные входы. Они не измеряют качество на реальных данных Kaggle.
 
-Install and configure the Kaggle CLI outside this repo:
-
-```bash
-pip install kaggle
-mkdir -p ~/.kaggle
-# Put kaggle.json from your Kaggle account settings into ~/.kaggle/kaggle.json
-chmod 600 ~/.kaggle/kaggle.json
-```
-
-Accept the competition rules on Kaggle, then download the data.
-
-Titanic:
-
-```bash
-kaggle competitions download -c titanic -p competitions/titanic/data/raw
-unzip competitions/titanic/data/raw/titanic.zip -d competitions/titanic/data/raw
-```
-
-House Prices:
-
-```bash
-kaggle competitions download -c house-prices-advanced-regression-techniques -p competitions/house-prices/data/raw
-unzip competitions/house-prices/data/raw/house-prices-advanced-regression-techniques.zip -d competitions/house-prices/data/raw
-```
-
-## Train And Create Submission
-
-Titanic:
-
-```bash
-./bin/sbt-local "titanic/run"
-```
-
-This reads:
-
-- `competitions/titanic/data/raw/train.csv`
-- `competitions/titanic/data/raw/test.csv`
-
-And writes:
-
-- `competitions/titanic/output/submission.csv`
-- `competitions/titanic/models/random_forest_pipeline`
-
-Submit:
-
-```bash
-kaggle competitions submit -c titanic \
-  -f competitions/titanic/output/submission.csv \
-  -m "Scala Spark RandomForest baseline"
-```
-
-House Prices:
-
-```bash
-./bin/sbt-local "housePrices/run"
-```
-
-This reads:
-
-- `competitions/house-prices/data/raw/train.csv`
-- `competitions/house-prices/data/raw/test.csv`
-
-And writes:
-
-- `competitions/house-prices/output/submission.csv`
-- `competitions/house-prices/models/rf_log_price_baseline`
-
-Submit:
-
-```bash
-kaggle competitions submit -c house-prices-advanced-regression-techniques \
-  -f competitions/house-prices/output/submission.csv \
-  -m "Scala Spark RF log-price baseline"
-```
+Подробности: [документация проекта](docs/README.md), [правила участия в разработке](AGENTS.md). Для изменений модели фиксируйте seed, параметры, локальную метрику и путь артефакта в `RESULTS.md` своего соревнования.
