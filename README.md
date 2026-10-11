@@ -2,9 +2,9 @@
 
 **Scala, Apache Spark и воспроизводимые эксперименты машинного обучения.**
 
-Лаборатория из четырёх соревнований Kaggle: от прогнозирования выживаемости и стоимости недвижимости до распознавания рукописных цифр. Проект объединяет подготовку признаков, оценку моделей и генерацию submission CSV в отдельных sbt-модулях.
+Лаборатория из пяти соревнований Kaggle: от прогнозирования выживаемости и стоимости недвижимости до распознавания рукописных цифр и классификации твитов. Проект объединяет подготовку признаков, оценку моделей и генерацию submission CSV в отдельных sbt-модулях.
 
-В новых модулях **Spaceship Titanic** и **Digit Recognizer** обучение и пакетный инференс разделены: сохранённый `PipelineModel` содержит обработку признаков и классификатор. Для новых предсказаний достаточно модели и входного CSV.
+В модулях **Spaceship Titanic**, **Digit Recognizer** и **Disaster Tweets** обучение и пакетный инференс разделены: сохранённый `PipelineModel` содержит обработку признаков и классификатор. Для новых предсказаний достаточно модели и входного CSV.
 
 ## Соревнования
 
@@ -14,8 +14,9 @@
 | `housePrices` | Стоимость недвижимости; log-RMSE | ElasticNet, RandomForest, GBT, XGBoost, ансамбли | [Руководство](competitions/house-prices/README.md) · [Результаты](competitions/house-prices/RESULTS.md) |
 | `spaceshipTitanic` | Перенос пассажиров в другое измерение; accuracy | RandomForest с признаками каюты и расходов | [Руководство](competitions/spaceship-titanic/README.md) · [Статус](competitions/spaceship-titanic/RESULTS.md) |
 | `digitRecognizer` | Цифры MNIST, 10 классов; accuracy | Multinomial LogisticRegression, 784 пикселя | [Руководство](competitions/digit-recognizer/README.md) · [Статус](competitions/digit-recognizer/RESULTS.md) |
+| `disasterTweets` | Твиты о катастрофах; бинарный F1 | TF-IDF слов/биграмм + LogisticRegression | [Руководство](competitions/disaster-tweets/README.md) · [Результаты](competitions/disaster-tweets/RESULTS.md) |
 
-Новые задачи выбраны из [Spaceship Titanic](https://www.kaggle.com/competitions/spaceship-titanic) и [Digit Recognizer](https://www.kaggle.com/competitions/digit-recognizer): они дополняют регрессию бинарной и многоклассовой классификацией. Публичные оценки новых моделей ещё не измерены; результаты прежних экспериментов находятся в соответствующих `RESULTS.md`.
+Новые задачи выбраны из [Spaceship Titanic](https://www.kaggle.com/competitions/spaceship-titanic), [Digit Recognizer](https://www.kaggle.com/competitions/digit-recognizer) и [NLP with Disaster Tweets](https://www.kaggle.com/competitions/nlp-getting-started): они добавляют бинарную, многоклассовую и текстовую классификацию. Измеренные локальные метрики и статус отправки находятся в `RESULTS.md` каждого модуля.
 
 ## Быстрый старт
 
@@ -74,7 +75,8 @@ spark-ml/
     ├── titanic/
     ├── house-prices/
     ├── spaceship-titanic/
-    └── digit-recognizer/
+    ├── digit-recognizer/
+    └── disaster-tweets/
         ├── README.md        # Данные, обучение, инференс
         ├── RESULTS.md       # Статус и журнал экспериментов
         ├── data/raw/        # Входные данные, не коммитятся
@@ -86,7 +88,7 @@ spark-ml/
 ## Проверка и разработка
 
 ```bash
-./bin/sbt-local "core/test" "spaceshipTitanic/test" "digitRecognizer/test"
+./bin/sbt-local "core/test" "spaceshipTitanic/test" "digitRecognizer/test" "disasterTweets/test"
 ```
 
 Тесты используют небольшие синтетические данные и проверяют сохранение/загрузку модели, инференс без `train.csv`, порядок `ImageId`, ведущие нули `PassengerId`, формат submission и ошибочные входы. Они не измеряют качество на реальных данных Kaggle.

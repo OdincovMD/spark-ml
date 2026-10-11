@@ -2,7 +2,7 @@
 
 ## Назначение и границы проекта
 
-Репозиторий содержит локальные Spark ML эксперименты и пакетные пайплайны для четырёх соревнований Kaggle. Он предназначен для разработки признаков, сравнения моделей и воспроизводимого получения submission CSV. Предсказания выполняются CLI-командами; HTTP-сервиса и автоматической отправки результатов нет.
+Репозиторий содержит локальные Spark ML эксперименты и пакетные пайплайны для пяти соревнований Kaggle. Он предназначен для разработки признаков, сравнения моделей и воспроизводимого получения submission CSV. Предсказания выполняются CLI-командами; HTTP-сервиса и автоматической отправки результатов нет.
 
 Начните с [главной страницы проекта](../README.md). Схема данных и команды конкретного соревнования находятся в его `README.md`, измеренные результаты — в `RESULTS.md`.
 
@@ -15,6 +15,7 @@
 | `housePrices` | `competitions/house-prices` | Регрессия `log1p(SalePrice)`, holdout и ансамбли |
 | `spaceshipTitanic` | `competitions/spaceship-titanic` | Типизированный CSV, признаки каюты/расходов, RandomForest |
 | `digitRecognizer` | `competitions/digit-recognizer` | Порядок строк MNIST, нормализация пикселей, multinomial LogisticRegression |
+| `disasterTweets` | `competitions/disaster-tweets` | Multiline CSV твитов, TF-IDF слов/биграмм, LogisticRegression, бинарный F1 |
 
 Новые модули зависят от `core` и реализуют `ClassificationCompetition`: чтение/проверку данных, построение пайплайна и формирование submission. `BatchClassification` управляет жизненным циклом. Titanic и House Prices сохраняют существующие интерфейсы; XGBoost подключён только к этим двум модулям.
 
@@ -31,6 +32,8 @@
 ./bin/sbt-local "spaceshipTitanic/run predict"
 ./bin/sbt-local "spaceshipTitanic/run run"
 ./bin/sbt-local "digitRecognizer/run --help"
+./bin/sbt-local "disasterTweets/run train"
+./bin/sbt-local "disasterTweets/run predict"
 ```
 
 Вызов без режима эквивалентен `run`.
@@ -45,7 +48,7 @@
 | `--validation-fraction` | `0.2` | Доля holdout, строго между 0 и 1 |
 | `--overwrite` | Выключен | Разрешить замену существующих артефактов |
 
-Дополнительные параметры: Spaceship Titanic — `--num-trees`, `--max-depth`; Digit Recognizer — `--max-iter`, `--reg-param`.
+Дополнительные параметры: Spaceship Titanic — `--num-trees`, `--max-depth`; Digit Recognizer — `--max-iter`, `--reg-param`; Disaster Tweets — `--num-features`, `--max-iter`, `--reg-param`, `--threshold`.
 
 Все относительные пути при `sbt run` отсчитываются от каталога соревнования. Например, `--model models/rf_v1` для `spaceshipTitanic` указывает на `competitions/spaceship-titanic/models/rf_v1`.
 
@@ -54,6 +57,8 @@
 `train` проверяет данные и делит их случайно с заданным seed. Пайплайн обучается на training split, затем оценивается accuracy на holdout. После проверки новый экземпляр модели обучается на всех размеченных строках и сохраняется вместе с преобразованиями признаков. Пустые split и training split с одним классом отклоняются.
 
 `predict` читает только входной CSV и сохранённую модель. В нём отсутствуют `fit`, доступ к `train.csv` и пересчёт параметров импутации/категоризации. Используйте артефакт своего модуля, совместимые версии Spark и тот же входной формат. Модель можно переносить целиком, включая все подкаталоги `metadata` и `stages`.
+
+Соревнование может добавить метрики через `ClassificationCompetition.validationMetrics`; общий lifecycle выводит их вместе с accuracy на том же holdout. Disaster Tweets считает F1 положительного класса `target=1`, сохраняет IDF обучающей части и порог LogisticRegression. Submission имеет заголовок `id,target` и сортируется по числовому идентификатору.
 
 Spaceship Titanic сохраняет строковые `PassengerId` с ведущими нулями и выводит `Transported` как `True`/`False`. Digit Recognizer назначает `ImageId` по физическому порядку строк исходного единственного CSV, начиная с 1, до любых Spark-преобразований. Это предотвращает сопоставление предсказаний с неверными изображениями.
 
@@ -66,13 +71,13 @@ Submission записывается как один файл с заголовк
 ./bin/sbt-local compile
 
 # Проверить новые модули на синтетических данных, без Kaggle credentials.
-./bin/sbt-local "core/test" "spaceshipTitanic/test" "digitRecognizer/test"
+./bin/sbt-local "core/test" "spaceshipTitanic/test" "digitRecognizer/test" "disasterTweets/test"
 
 # Проверить конкретный модуль.
 ./bin/sbt-local "spaceshipTitanic/testOnly *SpaceshipTitanicPipelineSpec"
 ```
 
-ScalaTest 3.2.19 используется в `core` и двух новых модулях. Тесты создают временные CSV и модели; проверяют полный цикл обучения/сохранения/инференса, порядок и типы идентификаторов, неизвестные категории, пропуски, некорректные labels/pixels и защиту результатов от перезаписи. У старых модулей автоматические тесты пока отсутствуют. Порог покрытия не задан.
+ScalaTest 3.2.19 используется в `core` и трёх новых модулях. Тесты создают временные CSV и модели; проверяют полный цикл обучения/сохранения/инференса, порядок и типы идентификаторов, неизвестные категории, пропуски, некорректные labels/pixels и защиту результатов от перезаписи. У старых модулей автоматические тесты пока отсутствуют. Порог покрытия не задан.
 
 При изменениях модели дополнительно запускайте проверку на реальных данных. Сравнивайте одинаковые split/seed, проверяйте заголовок и число строк submission, диапазон предсказаний. Синтетические тесты подтверждают работоспособность кода, но не качество модели на leaderboard.
 

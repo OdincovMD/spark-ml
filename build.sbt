@@ -32,7 +32,7 @@ lazy val batchSettings = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(titanic, housePrices, core, spaceshipTitanic, digitRecognizer)
+  .aggregate(titanic, housePrices, core, spaceshipTitanic, digitRecognizer, disasterTweets)
   .settings(
     name := "spark-ml-kaggle",
     publish / skip := true
@@ -75,4 +75,13 @@ lazy val digitRecognizer = (project in file("competitions/digit-recognizer"))
   .settings(
     name := "kaggle-digit-recognizer-spark",
     Compile / run / mainClass := Some("kaggle.sparkml.digits.DigitRecognizerPipeline")
+  )
+
+lazy val disasterTweets = (project in file("competitions/disaster-tweets"))
+  .dependsOn(core % "compile->compile;test->test")
+  .settings(commonSettings)
+  .settings(batchSettings)
+  .settings(
+    name := "kaggle-disaster-tweets-spark",
+    Compile / run / mainClass := Some("kaggle.sparkml.disasters.DisasterTweetsPipeline")
   )

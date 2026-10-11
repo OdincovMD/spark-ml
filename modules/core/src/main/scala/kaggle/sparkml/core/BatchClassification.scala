@@ -30,6 +30,7 @@ trait ClassificationCompetition {
   def read(spark: SparkSession, path: String, training: Boolean): DataFrame
   def pipeline(config: BatchConfig): Pipeline
   def submission(predictions: DataFrame): DataFrame
+  def validationMetrics(predictions: DataFrame): Seq[(String, Double)] = Seq.empty
 }
 
 object BatchClassification {
@@ -104,10 +105,16 @@ object BatchClassification {
           "The training split must contain at least two classes")
         val pipeline = competition.pipeline(config)
         val validationModel = pipeline.fit(training)
-        val accuracy = new MulticlassClassificationEvaluator()
-          .setLabelCol("label").setPredictionCol("prediction").setMetricName("accuracy")
-          .evaluate(validationModel.transform(validation))
-        println(f"Validation accuracy: $accuracy%.5f (seed=${config.seed}, holdout=${config.validationFraction})")
+        val predictions = validationModel.transform(validation).cache()
+        try {
+          val accuracy = new MulticlassClassificationEvaluator()
+            .setLabelCol("label").setPredictionCol("prediction").setMetricName("accuracy")
+            .evaluate(predictions)
+          println(f"Validation accuracy: $accuracy%.5f (seed=${config.seed}, holdout=${config.validationFraction})")
+          competition.validationMetrics(predictions).foreach { case (metric, value) =>
+            println(f"Validation $metric: $value%.5f (seed=${config.seed}, holdout=${config.validationFraction})")
+          }
+        } finally predictions.unpersist()
         val fitted = pipeline.fit(train)
         val writer = fitted.write
         if (config.overwrite) writer.overwrite().save(config.modelPath)
