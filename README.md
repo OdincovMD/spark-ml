@@ -12,11 +12,13 @@
 | --- | --- | --- | --- |
 | `titanic` | Выживание пассажиров; accuracy/AUC | RandomForest, GBT, LogisticRegression, XGBoost, ансамбли | [Руководство](competitions/titanic/README.md) · [Результаты](competitions/titanic/RESULTS.md) |
 | `housePrices` | Стоимость недвижимости; log-RMSE | ElasticNet, RandomForest, GBT, XGBoost, ансамбли | [Руководство](competitions/house-prices/README.md) · [Результаты](competitions/house-prices/RESULTS.md) |
-| `spaceshipTitanic` | Перенос пассажиров в другое измерение; accuracy | RandomForest с признаками каюты и расходов | [Руководство](competitions/spaceship-titanic/README.md) · [Статус](competitions/spaceship-titanic/RESULTS.md) |
+| `spaceshipTitanic` | Перенос пассажиров в другое измерение; accuracy | RandomForest/GBT с признаками каюты и расходов | [Руководство](competitions/spaceship-titanic/README.md) · [Результаты](competitions/spaceship-titanic/RESULTS.md) |
 | `digitRecognizer` | Цифры MNIST, 10 классов; accuracy | Multinomial LogisticRegression, 784 пикселя | [Руководство](competitions/digit-recognizer/README.md) · [Статус](competitions/digit-recognizer/RESULTS.md) |
 | `disasterTweets` | Твиты о катастрофах; бинарный F1 | TF-IDF слов/биграмм + LogisticRegression | [Руководство](competitions/disaster-tweets/README.md) · [Результаты](competitions/disaster-tweets/RESULTS.md) |
 
 Новые задачи выбраны из [Spaceship Titanic](https://www.kaggle.com/competitions/spaceship-titanic), [Digit Recognizer](https://www.kaggle.com/competitions/digit-recognizer) и [NLP with Disaster Tweets](https://www.kaggle.com/competitions/nlp-getting-started): они добавляют бинарную, многоклассовую и текстовую классификацию. Измеренные локальные метрики и статус отправки находятся в `RESULTS.md` каждого модуля.
+
+Реальный запуск Spaceship Titanic (2026-10-26): лучший локальный вариант GBT — **holdout accuracy 0.82279**, обработанный сабмит Kaggle **57670441** — **public accuracy 0.79588**. Данные, сравнение трёх конфигураций и команды воспроизведения — в [журнале результатов](competitions/spaceship-titanic/RESULTS.md).
 
 ## Быстрый старт
 

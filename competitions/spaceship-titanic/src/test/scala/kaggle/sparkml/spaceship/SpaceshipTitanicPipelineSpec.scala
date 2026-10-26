@@ -4,6 +4,7 @@ import java.nio.file.Files
 
 import kaggle.sparkml.core.{BatchClassification, BatchConfig, SparkSuite}
 import org.apache.spark.ml.PipelineModel
+import org.apache.spark.ml.classification.GBTClassificationModel
 
 class SpaceshipTitanicPipelineSpec extends SparkSuite {
   private val header = "PassengerId,HomePlanet,CryoSleep,Cabin,Destination,Age,VIP,RoomService,FoodCourt,ShoppingMall,Spa,VRDeck,Name"
@@ -55,5 +56,39 @@ class SpaceshipTitanicPipelineSpec extends SparkSuite {
     val invalid = writeCsv(dir.resolve("invalid.csv"), Seq(header + ",Transported",
       passenger("0001_01", positive = true) + ",maybe"))
     intercept[IllegalArgumentException] { SpaceshipTitanicPipeline.read(spark, invalid, training = true) }
+  }
+
+  test("GBT pipeline retains its settings and preprocessing after loading") {
+    val dir = Files.createTempDirectory("spaceship-gbt-")
+    val training = writeCsv(dir.resolve("train.csv"), Seq(header + ",Transported") ++ (1 to 60).map { i =>
+      passenger(f"$i%04d" + "_01", i % 2 == 0) + s",${if (i % 2 == 0) "True" else "False"}"
+    })
+    val frame = SpaceshipTitanicPipeline.read(spark, training, training = true)
+    val config = BatchConfig(tuning = Map("--classifier" -> "gbt", "--max-iter" -> "3",
+      "--max-depth" -> "2", "--step-size" -> "0.1"))
+    val fitted = SpaceshipTitanicPipeline.pipeline(config).fit(frame)
+    val path = dir.resolve("model").toString
+    fitted.write.save(path)
+    Files.delete(java.nio.file.Paths.get(training))
+    val loaded = PipelineModel.load(path)
+    val classifier = loaded.stages.last.asInstanceOf[GBTClassificationModel]
+    assert(classifier.getMaxIter == 3)
+    assert(classifier.getMaxDepth == 2)
+    assert(classifier.getStepSize == 0.1)
+    val input = writeCsv(dir.resolve("test.csv"), Seq(header,
+      passenger("0001_02", positive = true, missing = true), passenger("0002_02", positive = false)))
+    val result = SpaceshipTitanicPipeline.submission(
+      loaded.transform(SpaceshipTitanicPipeline.read(spark, input, training = false))).collect()
+    assert(result.map(row => s"${row.getString(0)},${row.getString(1)}").toVector ==
+      Vector("0001_02,True", "0002_02,False"))
+  }
+
+  test("invalid classifier and GBT parameters are rejected before fitting") {
+    Seq("--classifier" -> "unknown", "--max-iter" -> "0", "--step-size" -> "0",
+      "--step-size" -> "1.1", "--step-size" -> "NaN").foreach { option =>
+      intercept[IllegalArgumentException] {
+        SpaceshipTitanicPipeline.pipeline(BatchConfig(tuning = Map(option)))
+      }
+    }
   }
 }

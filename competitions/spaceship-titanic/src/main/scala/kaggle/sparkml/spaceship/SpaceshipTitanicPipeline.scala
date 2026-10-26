@@ -2,7 +2,7 @@ package kaggle.sparkml.spaceship
 
 import kaggle.sparkml.core.{BatchClassification, BatchConfig, ClassificationCompetition}
 import org.apache.spark.ml.{Pipeline, PipelineStage}
-import org.apache.spark.ml.classification.RandomForestClassifier
+import org.apache.spark.ml.classification.{GBTClassifier, RandomForestClassifier}
 import org.apache.spark.ml.feature.{Imputer, SQLTransformer, StringIndexer, VectorAssembler}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions._
@@ -11,8 +11,9 @@ import org.apache.spark.sql.types.{DoubleType, StringType, StructField, StructTy
 object SpaceshipTitanicPipeline extends ClassificationCompetition {
   override val name = "spaceship-titanic"
   override val defaultModel = "models/rf_v1"
-  override val tuningOptions = Set("--num-trees", "--max-depth")
-  override val tuningHelp = "--num-trees n (200) --max-depth n (8)"
+  override val tuningOptions = Set("--classifier", "--num-trees", "--max-depth", "--max-iter", "--step-size")
+  override val tuningHelp = "--classifier rf|gbt (rf) --num-trees n (200) --max-depth n (8) " +
+    "--max-iter n (100, GBT) --step-size x (0.05, GBT)"
 
   private val Spending = Array("RoomService", "FoodCourt", "ShoppingMall", "Spa", "VRDeck")
   private val Numeric = Array("Age", "CabinNumber", "GroupMember", "TotalSpend", "NoSpend") ++ Spending
@@ -51,8 +52,14 @@ object SpaceshipTitanicPipeline extends ClassificationCompetition {
   override def pipeline(config: BatchConfig): Pipeline = {
     val trees = config.intOption("--num-trees", 200)
     val depth = config.intOption("--max-depth", 8)
+    val algorithm = config.tuning.getOrElse("--classifier", "rf")
+    val iterations = config.intOption("--max-iter", 100)
+    val stepSize = config.doubleOption("--step-size", 0.05)
+    require(Set("rf", "gbt").contains(algorithm), "--classifier must be rf or gbt")
     require(trees > 0, "--num-trees must be positive")
     require(depth > 0 && depth <= 30, "--max-depth must be in [1, 30]")
+    require(iterations > 0, "--max-iter must be positive")
+    require(stepSize > 0.0 && stepSize <= 1.0, "--step-size must be in (0, 1]")
     val spend = Spending.map(name => s"COALESCE($name, 0.0)").mkString(" + ")
     val text = Array("HomePlanet", "CryoSleep", "Destination", "VIP")
       .map(name => s"COALESCE($name, '__missing__') AS ${name}Text")
@@ -77,8 +84,12 @@ object SpaceshipTitanicPipeline extends ClassificationCompetition {
     val assembler = new VectorAssembler()
       .setInputCols(Numeric.map(name => s"${name}Imputed") ++ categorical.map(name => s"${name}Index"))
       .setOutputCol("features")
-    val classifier = new RandomForestClassifier().setNumTrees(trees).setMaxDepth(depth)
-      .setMaxBins(64).setSeed(config.seed).setLabelCol("label").setFeaturesCol("features")
+    val classifier: PipelineStage = algorithm match {
+      case "rf" => new RandomForestClassifier().setNumTrees(trees).setMaxDepth(depth)
+        .setMaxBins(64).setSeed(config.seed).setLabelCol("label").setFeaturesCol("features")
+      case "gbt" => new GBTClassifier().setMaxIter(iterations).setStepSize(stepSize).setMaxDepth(depth)
+        .setMaxBins(64).setSeed(config.seed).setLabelCol("label").setFeaturesCol("features")
+    }
     new Pipeline().setStages(Array[PipelineStage](featureStage, imputer) ++ indexers ++ Array(assembler, classifier))
   }
 

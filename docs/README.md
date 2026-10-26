@@ -13,7 +13,7 @@
 | `core` | `modules/core` | CLI новых модулей, holdout, обучение, загрузка `PipelineModel`, запись CSV |
 | `titanic` | `competitions/titanic` | Эксперименты классификации, CV, ансамбли и постобработка |
 | `housePrices` | `competitions/house-prices` | Регрессия `log1p(SalePrice)`, holdout и ансамбли |
-| `spaceshipTitanic` | `competitions/spaceship-titanic` | Типизированный CSV, признаки каюты/расходов, RandomForest |
+| `spaceshipTitanic` | `competitions/spaceship-titanic` | Типизированный CSV, признаки каюты/расходов, RandomForest/GBT |
 | `digitRecognizer` | `competitions/digit-recognizer` | Порядок строк MNIST, нормализация пикселей, multinomial LogisticRegression |
 | `disasterTweets` | `competitions/disaster-tweets` | Multiline CSV твитов, TF-IDF слов/биграмм, LogisticRegression, бинарный F1 |
 
@@ -48,7 +48,7 @@
 | `--validation-fraction` | `0.2` | Доля holdout, строго между 0 и 1 |
 | `--overwrite` | Выключен | Разрешить замену существующих артефактов |
 
-Дополнительные параметры: Spaceship Titanic — `--num-trees`, `--max-depth`; Digit Recognizer — `--max-iter`, `--reg-param`; Disaster Tweets — `--num-features`, `--max-iter`, `--reg-param`, `--threshold`.
+Дополнительные параметры: Spaceship Titanic — `--classifier rf|gbt`, `--num-trees` (RF), `--max-depth`, `--max-iter` и `--step-size` (GBT); Digit Recognizer — `--max-iter`, `--reg-param`; Disaster Tweets — `--num-features`, `--max-iter`, `--reg-param`, `--threshold`.
 
 Все относительные пути при `sbt run` отсчитываются от каталога соревнования. Например, `--model models/rf_v1` для `spaceshipTitanic` указывает на `competitions/spaceship-titanic/models/rf_v1`.
 
@@ -85,7 +85,9 @@ ScalaTest 3.2.19 используется в `core` и трёх новых мо�
 
 Скачивайте данные через свою учётную запись Kaggle после проверки условий соревнования. Храните credentials вне репозитория. `data/`, `models/`, `output/`, архивы и CSV исключены из Git; не добавляйте их принудительно ради отчёта.
 
-В `RESULTS.md` записывайте дату, команду, seed, параметры, локальную метрику, путь модели и submission. Публичную оценку указывайте только после действительной отправки. Для новых модулей исходный статус — «не измерено».
+В `RESULTS.md` записывайте дату, команду, seed, параметры, локальную метрику, путь модели и submission. Публичную оценку указывайте только после действительной отправки. До реального запуска метрики помечаются «не измерено».
+
+Измеренный запуск Spaceship Titanic от 2026-10-26: GBT с 100 итерациями, глубиной 5 и шагом 0.05 — локальная accuracy 0.82279; подтверждённая Kaggle public accuracy 0.79588 (submission 57670441, `COMPLETE`). Сравнение с двумя RandomForest, происхождение данных и команды — в [RESULTS.md модуля](../competitions/spaceship-titanic/RESULTS.md).
 
 ## Разработка и работа агента
 
