@@ -46,7 +46,6 @@ unzip competitions/spaceship-titanic/data/raw/spaceship-titanic.zip -d competiti
 
 Результат: `competitions/spaceship-titanic/output/submission.csv` с колонками `PassengerId,Transported`. Перед скачиванием проверьте условия участия на странице соревнования. Данные и credentials не входят в репозиторий.
 
-`bin/sbt-local` хранит кеши зависимостей в рабочем каталоге. Первый запуск требует сети; для компиляции данные Kaggle не нужны. При `sbt run` пути `data/raw/`, `models/` и `output/` отсчитываются **от каталога выбранного соревнования**.
 
 ## Обучение → модель → инференс
 
