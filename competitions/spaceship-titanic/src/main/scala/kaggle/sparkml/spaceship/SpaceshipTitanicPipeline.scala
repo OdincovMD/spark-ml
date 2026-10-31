@@ -11,12 +11,14 @@ import org.apache.spark.sql.types.{DoubleType, StringType, StructField, StructTy
 object SpaceshipTitanicPipeline extends ClassificationCompetition {
   override val name = "spaceship-titanic"
   override val defaultModel = "models/rf_v1"
-  override val tuningOptions = Set("--classifier", "--num-trees", "--max-depth", "--max-iter", "--step-size")
+  override val tuningOptions = Set("--classifier", "--num-trees", "--max-depth", "--max-iter", "--step-size", "--feature-set")
   override val tuningHelp = "--classifier rf|gbt (rf) --num-trees n (200) --max-depth n (8) " +
-    "--max-iter n (100, GBT) --step-size x (0.05, GBT)"
+    "--max-iter n (100, GBT) --step-size x (0.05, GBT) --feature-set basic|extended (basic)"
 
   private val Spending = Array("RoomService", "FoodCourt", "ShoppingMall", "Spa", "VRDeck")
   private val Numeric = Array("Age", "CabinNumber", "GroupMember", "TotalSpend", "NoSpend") ++ Spending
+  private val ExtendedNumeric = Array("GroupNumber", "MissingSpendCount", "SpendServiceCount") ++
+    Spending.map(name => s"${name}Share")
   private val Categorical = Array("HomePlanet", "CryoSleep", "Destination", "VIP", "CabinDeck", "CabinSide")
   private val Fields = Array("PassengerId", "HomePlanet", "CryoSleep", "Cabin", "Destination", "Age", "VIP") ++
     Spending ++ Array("Name")
@@ -55,12 +57,25 @@ object SpaceshipTitanicPipeline extends ClassificationCompetition {
     val algorithm = config.tuning.getOrElse("--classifier", "rf")
     val iterations = config.intOption("--max-iter", 100)
     val stepSize = config.doubleOption("--step-size", 0.05)
+    val featureSet = config.tuning.getOrElse("--feature-set", "basic")
     require(Set("rf", "gbt").contains(algorithm), "--classifier must be rf or gbt")
+    require(Set("basic", "extended").contains(featureSet), "--feature-set must be basic or extended")
     require(trees > 0, "--num-trees must be positive")
     require(depth > 0 && depth <= 30, "--max-depth must be in [1, 30]")
     require(iterations > 0, "--max-iter must be positive")
     require(stepSize > 0.0 && stepSize <= 1.0, "--step-size must be in (0, 1]")
     val spend = Spending.map(name => s"COALESCE($name, 0.0)").mkString(" + ")
+    // Row-local features work identically on holdout and new batches, without group aggregation.
+    val extended = if (featureSet == "extended") {
+      val missing = Spending.map(name => s"CASE WHEN $name IS NULL THEN 1.0 ELSE 0.0 END").mkString(" + ")
+      val services = Spending.map(name => s"CASE WHEN $name > 0 THEN 1.0 ELSE 0.0 END").mkString(" + ")
+      val shares = Spending.map { name =>
+        s"CASE WHEN ($spend) > 0 THEN COALESCE($name, 0.0) / ($spend) ELSE 0.0 END AS ${name}Share"
+      }
+      ", " + (Array("CAST(split(PassengerId, '_')[0] AS DOUBLE) AS GroupNumber",
+        s"$missing AS MissingSpendCount", s"$services AS SpendServiceCount") ++ shares).mkString(", ")
+    } else ""
+    val numeric = if (featureSet == "extended") Numeric ++ ExtendedNumeric else Numeric
     val text = Array("HomePlanet", "CryoSleep", "Destination", "VIP")
       .map(name => s"COALESCE($name, '__missing__') AS ${name}Text")
     val featureStage = new SQLTransformer().setStatement(
@@ -70,7 +85,7 @@ object SpaceshipTitanicPipeline extends ClassificationCompetition {
          |  CAST(split(Cabin, '/')[1] AS DOUBLE) AS CabinNumber,
          |  CAST(split(PassengerId, '_')[1] AS DOUBLE) AS GroupMember,
          |  $spend AS TotalSpend,
-         |  CASE WHEN $spend = 0 THEN 1.0 ELSE 0.0 END AS NoSpend
+         |  CASE WHEN $spend = 0 THEN 1.0 ELSE 0.0 END AS NoSpend$extended
          |FROM __THIS__""".stripMargin)
     val categorical = Categorical.map {
       case name if Array("HomePlanet", "CryoSleep", "Destination", "VIP").contains(name) => s"${name}Text"
@@ -79,10 +94,10 @@ object SpaceshipTitanicPipeline extends ClassificationCompetition {
     val indexers = categorical.map { name =>
       new StringIndexer().setInputCol(name).setOutputCol(s"${name}Index").setHandleInvalid("keep")
     }
-    val imputer = new Imputer().setStrategy("median").setInputCols(Numeric)
-      .setOutputCols(Numeric.map(name => s"${name}Imputed"))
+    val imputer = new Imputer().setStrategy("median").setInputCols(numeric)
+      .setOutputCols(numeric.map(name => s"${name}Imputed"))
     val assembler = new VectorAssembler()
-      .setInputCols(Numeric.map(name => s"${name}Imputed") ++ categorical.map(name => s"${name}Index"))
+      .setInputCols(numeric.map(name => s"${name}Imputed") ++ categorical.map(name => s"${name}Index"))
       .setOutputCol("features")
     val classifier: PipelineStage = algorithm match {
       case "rf" => new RandomForestClassifier().setNumTrees(trees).setMaxDepth(depth)

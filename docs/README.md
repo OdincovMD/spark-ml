@@ -48,7 +48,7 @@
 | `--validation-fraction` | `0.2` | Доля holdout, строго между 0 и 1 |
 | `--overwrite` | Выключен | Разрешить замену существующих артефактов |
 
-Дополнительные параметры: Spaceship Titanic — `--classifier rf|gbt`, `--num-trees` (RF), `--max-depth`, `--max-iter` и `--step-size` (GBT); Digit Recognizer — `--max-iter`, `--reg-param`; Disaster Tweets — `--num-features`, `--max-iter`, `--reg-param`, `--threshold`.
+Дополнительные параметры: Spaceship Titanic — `--classifier rf|gbt`, `--num-trees` (RF), `--max-depth`, `--max-iter` и `--step-size` (GBT), `--feature-set basic|extended` (номер группы и структура расходов); Digit Recognizer — `--max-iter`, `--reg-param`; Disaster Tweets — `--num-features`, `--max-iter`, `--reg-param`, `--threshold`.
 
 Все относительные пути при `sbt run` отсчитываются от каталога соревнования. Например, `--model models/rf_v1` для `spaceshipTitanic` указывает на `competitions/spaceship-titanic/models/rf_v1`.
 
