@@ -1,9 +1,9 @@
 package kaggle.sparkml.disasters
 
 import kaggle.sparkml.core.{BatchClassification, BatchConfig, ClassificationCompetition}
-import org.apache.spark.ml.Pipeline
+import org.apache.spark.ml.{Pipeline, PipelineStage}
 import org.apache.spark.ml.classification.LogisticRegression
-import org.apache.spark.ml.feature.{HashingTF, IDF, NGram, Normalizer, RegexTokenizer, SQLTransformer}
+import org.apache.spark.ml.feature.{CountVectorizer, HashingTF, IDF, NGram, Normalizer, RegexTokenizer, SQLTransformer}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{IntegerType, LongType}
@@ -11,8 +11,9 @@ import org.apache.spark.sql.types.{IntegerType, LongType}
 object DisasterTweetsPipeline extends ClassificationCompetition {
   override val name = "disaster-tweets"
   override val defaultModel = "models/tfidf_lr_v3"
-  override val tuningOptions = Set("--num-features", "--max-iter", "--reg-param", "--threshold")
-  override val tuningHelp = "--num-features n (32768) --max-iter n (80) --reg-param x (0.0001) --threshold x (0.4)"
+  override val tuningOptions = Set("--vectorizer", "--num-features", "--max-iter", "--reg-param", "--threshold")
+  override val tuningHelp = "--vectorizer hashing|count (hashing) --num-features n (32768) " +
+    "--max-iter n (80) --reg-param x (0.0001) --threshold x (0.4)"
 
   private val Fields = Array("id", "keyword", "location", "text")
 
@@ -39,10 +40,12 @@ object DisasterTweetsPipeline extends ClassificationCompetition {
   }
 
   override def pipeline(config: BatchConfig): Pipeline = {
+    val vectorizer = config.tuning.getOrElse("--vectorizer", "hashing")
     val features = config.intOption("--num-features", 32768)
     val iterations = config.intOption("--max-iter", 80)
     val regularization = config.doubleOption("--reg-param", 0.0001)
     val threshold = config.doubleOption("--threshold", 0.4)
+    require(Set("hashing", "count").contains(vectorizer), "--vectorizer must be hashing or count")
     require(features > 0, "--num-features must be positive")
     require(iterations > 0, "--max-iter must be positive")
     require(!regularization.isInfinity && !regularization.isNaN && regularization >= 0.0,
@@ -58,13 +61,18 @@ object DisasterTweetsPipeline extends ClassificationCompetition {
       .setPattern("[^\\p{L}\\p{N}_]+").setToLowercase(true).setMinTokenLength(2)
     val bigrams = new NGram().setN(2).setInputCol("words").setOutputCol("bigrams")
     val terms = new SQLTransformer().setStatement("SELECT *, concat(words, bigrams) AS terms FROM __THIS__")
-    val hashing = new HashingTF().setNumFeatures(features).setInputCol("terms").setOutputCol("termCounts")
+    val termCounts: PipelineStage = vectorizer match {
+      case "hashing" => new HashingTF().setNumFeatures(features).setInputCol("terms").setOutputCol("termCounts")
+      // Vocabulary is fitted inside the pipeline on the training split and frozen for inference.
+      case "count" => new CountVectorizer().setVocabSize(features).setMinDF(2.0)
+        .setInputCol("terms").setOutputCol("termCounts")
+    }
     val idf = new IDF().setMinDocFreq(2).setInputCol("termCounts").setOutputCol("tfidf")
     val normalize = new Normalizer().setInputCol("tfidf").setOutputCol("features").setP(2.0)
     val classifier = new LogisticRegression().setMaxIter(iterations).setRegParam(regularization)
       .setElasticNetParam(0.0).setStandardization(false).setThreshold(threshold)
       .setLabelCol("label").setFeaturesCol("features")
-    new Pipeline().setStages(Array(clean, tokenizer, bigrams, terms, hashing, idf, normalize, classifier))
+    new Pipeline().setStages(Array(clean, tokenizer, bigrams, terms, termCounts, idf, normalize, classifier))
   }
 
   override def validationMetrics(predictions: DataFrame): Seq[(String, Double)] = {

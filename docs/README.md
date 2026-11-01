@@ -48,7 +48,7 @@
 | `--validation-fraction` | `0.2` | Доля holdout, строго между 0 и 1 |
 | `--overwrite` | Выключен | Разрешить замену существующих артефактов |
 
-Дополнительные параметры: Spaceship Titanic — `--classifier rf|gbt`, `--num-trees` (RF), `--max-depth`, `--max-iter` и `--step-size` (GBT), `--feature-set basic|extended` (номер группы и структура расходов); Digit Recognizer — `--max-iter`, `--reg-param`; Disaster Tweets — `--num-features`, `--max-iter`, `--reg-param`, `--threshold`.
+Дополнительные параметры: Spaceship Titanic — `--classifier rf|gbt`, `--num-trees` (RF), `--max-depth`, `--max-iter` и `--step-size` (GBT), `--feature-set basic|extended` (номер группы и структура расходов); Digit Recognizer — `--max-iter`, `--reg-param`; Disaster Tweets — `--vectorizer hashing|count`, `--num-features`, `--max-iter`, `--reg-param`, `--threshold`.
 
 Все относительные пути при `sbt run` отсчитываются от каталога соревнования. Например, `--model models/rf_v1` для `spaceshipTitanic` указывает на `competitions/spaceship-titanic/models/rf_v1`.
 
@@ -59,6 +59,8 @@
 `predict` читает только входной CSV и сохранённую модель. В нём отсутствуют `fit`, доступ к `train.csv` и пересчёт параметров импутации/категоризации. Используйте артефакт своего модуля, совместимые версии Spark и тот же входной формат. Модель можно переносить целиком, включая все подкаталоги `metadata` и `stages`.
 
 Соревнование может добавить метрики через `ClassificationCompetition.validationMetrics`; общий lifecycle выводит их вместе с accuracy на том же holdout. Disaster Tweets считает F1 положительного класса `target=1`, сохраняет IDF обучающей части и порог LogisticRegression. Submission имеет заголовок `id,target` и сортируется по числовому идентификатору.
+
+В Disaster Tweets `--vectorizer count` заменяет HashingTF обучаемым словарём CountVectorizer. Словарь и IDF обучаются внутри pipeline на training split; сохранённая модель игнорирует неизвестные термины без переобучения при инференсе. По умолчанию используется исходный `hashing`.
 
 Spaceship Titanic сохраняет строковые `PassengerId` с ведущими нулями и выводит `Transported` как `True`/`False`. Digit Recognizer назначает `ImageId` по физическому порядку строк исходного единственного CSV, начиная с 1, до любых Spark-преобразований. Это предотвращает сопоставление предсказаний с неверными изображениями.
 

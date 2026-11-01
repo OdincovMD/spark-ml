@@ -1,5 +1,46 @@
 # Результаты NLP with Disaster Tweets
 
+## Запуск 2026-11-01: обучаемый словарь вместо хеширования
+
+Добавлен `--vectorizer count`: CountVectorizer кодирует слова и биграммы без хеш-коллизий, сохраняя обученный словарь в PipelineModel. Словарь включает термины как минимум из двух обучающих твитов, до 32 768 терминов. На holdout словарь и IDF обучаются только по training split; при инференсе неизвестные термины игнорируются, словарь не меняется. Исходный HashingTF доступен через `--vectorizer hashing` и остаётся вариантом по умолчанию.
+
+Оба варианта сравнены на одинаковых holdout 20% с seed 42, 1337 и 2026. Данные прежние: 7 613 обучающих и 3 263 тестовых строки, SHA-256 приведены ниже. Общие параметры: слова и биграммы, `numFeatures/vocabSize=32768`, IDF `minDocFreq=2`, L2-нормализация, LogisticRegression без стандартизации, `maxIter=80`, `regParam=0.0001`, `threshold=0.4`. После оценки каждая модель обучена заново на всех размеченных строках и сохранена отдельно.
+
+| Seed | HashingTF F1 | CountVectorizer F1 | HashingTF accuracy | CountVectorizer accuracy |
+| --- | --- | --- | --- | --- |
+| 42 | 0.77005 | 0.77193 | 0.79063 | 0.79408 |
+| 1337 | 0.74743 | 0.75110 | 0.76819 | 0.77224 |
+| 2026 | 0.74631 | 0.75389 | 0.77417 | 0.78177 |
+| Среднее | 0.75460 | 0.75897 | 0.77766 | 0.78270 |
+
+CountVectorizer улучшил бинарный F1 на всех трёх разбиениях. Средний прирост — примерно **0.00438**, или **0.44 процентного пункта** F1. Baseline seed 42 воспроизвёл прежний результат `tfidf_lr_v3`. Для словарного варианта не подбирались отдельные параметры классификатора или порог. Это локальная проверка на случайных holdout; повторяющиеся твиты могут попасть в обе части, а seed 42 ранее использовался для настройки baseline. Оценка не заменяет независимый тест или leaderboard.
+
+Новые модели в Kaggle не отправлялись, их public F1 **не измерен**. Подтверждённый публичный результат `tfidf_lr_v3` остаётся 0.77750; он относится к прежнему HashingTF, а не к CountVectorizer.
+
+Окружение: Eclipse Temurin JDK 11.0.32.1, sbt 1.11.3, Scala 2.12.18, Spark 3.5.9; heap приложения 2 GiB, Spark `local[4]`, 8 shuffle partitions. Команды из корня:
+
+```bash
+export JAVA_TOOL_OPTIONS='-XX:ActiveProcessorCount=4 -Dspark.master=local[4] -Dspark.sql.shuffle.partitions=8'
+export SPARK_LOCAL_IP=127.0.0.1
+
+for seed in 42 1337 2026; do
+  for vectorizer in hashing count; do
+    ./bin/sbt-local "disasterTweets/run train --vectorizer $vectorizer --seed $seed --validation-fraction 0.2 --num-features 32768 --max-iter 80 --reg-param 0.0001 --threshold 0.4 --model models/${vectorizer}_seed${seed}_20261101"
+  done
+done
+
+./bin/sbt-local "disasterTweets/run predict --train data/raw/not-needed.csv --model models/count_seed42_20261101 --output output/submission_count_seed42_20261101.csv"
+./bin/sbt-local "disasterTweets/test" "core/test"
+```
+
+Указанные модели уже созданы; для повторения задайте новые пути либо явный `--overwrite`. Использованы прежние локальные кеши `bin/sbt-local`, `JAVA_HOME=/home/hardbox/.local/share/jdk-11-temurin` и временный launcher `/tmp/spark-ml-tools/bin/sbt` в PATH. Каждое обучение с holdout, переобучением на всех данных и сохранением заняло 47–55 секунд. Журнал: `output/vectorizer_comparison_20261101.log`.
+
+Пройдены **7 тестов**: Disaster Tweets — 5, core — 2. Проверены исходный HashingTF и новый словарь, сохранение/загрузка модели и инференс после удаления train.csv, фильтрация термина из единственного обучающего твита, отсутствие неизвестных терминов в словаре, нулевой вектор для пустого или неизвестного текста, multiline CSV, числовой порядок ID, ошибочные параметры, бинарный F1 и защита CSV от перезаписи. Журнал: `output/vectorizer_tests_20261101.log`.
+
+Отдельный `predict` завершился за 26 секунд с несуществующим `--train`, используя сохранённую словарную модель seed 42. В `output/submission_count_seed42_20261101.csv` проверены заголовок `id,target`, 3 263 уникальных ID, точное совпадение множества ID с test.csv, числовая сортировка и только значения `0`/`1` (1 808 / 1 455). SHA-256: `f691b93c9bb575b9cb09bca1b6c93e872fdd43d9e53cb39be6a6aeb071144b7a`. В metadata всех шести моделей подтверждены векторизатор, лимит признаков и параметры классификатора. SHA-256 входных CSV совпадают с прежним запуском. Сводка: `output/vectorizer_verification_20261101.json`.
+
+Перед правками прочитаны `docs/README.md`, корневой README и руководство модуля. `.gitnexus` отсутствует, `npx` недоступен; зависимости проверены непосредственно по Scala-коду и build.sbt. Данные, модели, CSV и журналы исключены из Git.
+
 ## Запуск 2026-10-11, Europe/Moscow
 
 Обучение, сохранение полного `PipelineModel` и отдельный инференс выполнены на реальных данных соревнования. Лучший локальный вариант — **`tfidf_lr_v3`: F1 0.77005, accuracy 0.79063**. Сабмит **57084278** успешно обработан Kaggle: **публичный F1 0.77750**, статус `COMPLETE`.
